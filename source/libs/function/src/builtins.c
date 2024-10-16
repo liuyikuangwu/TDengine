@@ -90,28 +90,6 @@ static bool validateMinuteRange(int8_t hour, int8_t minute, char sign) {
   return false;
 }
 
-static bool validateTimestampDigits(const SValueNode* pVal) {
-  if (!IS_INTEGER_TYPE(pVal->node.resType.type)) {
-    return false;
-  }
-
-  int64_t tsVal = pVal->datum.i;
-  char    fraction[20] = {0};
-  NUM_TO_STRING(pVal->node.resType.type, &tsVal, sizeof(fraction), fraction);
-  int32_t tsDigits = (int32_t)strlen(fraction);
-
-  if (tsDigits > TSDB_TIME_PRECISION_SEC_DIGITS) {
-    if (tsDigits == TSDB_TIME_PRECISION_MILLI_DIGITS || tsDigits == TSDB_TIME_PRECISION_MICRO_DIGITS ||
-        tsDigits == TSDB_TIME_PRECISION_NANO_DIGITS) {
-      return true;
-    } else {
-      return false;
-    }
-  }
-
-  return true;
-}
-
 static bool validateTimezoneFormat(const SValueNode* pVal) {
   if (TSDB_DATA_TYPE_BINARY != pVal->node.resType.type) {
     return false;
@@ -298,36 +276,344 @@ static SDataType* getSDataTypeFromNode(SNode* pNode) {
   }
 }
 
-// There is only one parameter of numeric type, and the return type is parameter type
-static int32_t translateInOutNum(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
+static bool paramSupportNull(uint64_t typeFlag) {
+  return FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_NULL_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_ALL_TYPE);
+}
+
+static bool paramSupportBool(uint64_t typeFlag) {
+  return FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_BOOL_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_ALL_TYPE);
+}
+
+static bool paramSupportTinyint(uint64_t typeFlag) {
+  return FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_TINYINT_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_ALL_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_NUMERIC_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_INTEGER_TYPE);
+}
+
+static bool paramSupportSmallint(uint64_t typeFlag) {
+  return FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_SMALLINT_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_ALL_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_NUMERIC_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_INTEGER_TYPE);
+}
+
+static bool paramSupportInt(uint64_t typeFlag) {
+  return FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_INT_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_ALL_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_NUMERIC_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_INTEGER_TYPE);
+}
+
+static bool paramSupportBigint(uint64_t typeFlag) {
+  return FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_BIGINT_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_ALL_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_NUMERIC_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_INTEGER_TYPE);
+}
+
+static bool paramSupportFloat(uint64_t typeFlag) {
+  return FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_FLOAT_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_ALL_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_NUMERIC_TYPE);
+}
+
+static bool paramSupportDouble(uint64_t typeFlag) {
+  return FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_DOUBLE_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_ALL_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_NUMERIC_TYPE);
+}
+
+static bool paramSupportVarchar(uint64_t typeFlag) {
+  return FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_VARCHAR_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_ALL_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_STRING_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_VAR_TYPE);
+}
+
+static bool paramSupportTimestamp(uint64_t typeFlag) {
+  return FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_TIMESTAMP_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_ALL_TYPE);
+}
+
+static bool paramSupportNchar(uint64_t typeFlag) {
+  return FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_NCHAR_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_ALL_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_STRING_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_VAR_TYPE);
+}
+
+static bool paramSupportUTinyInt(uint64_t typeFlag) {
+  return FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_UTINYINT_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_ALL_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_NUMERIC_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_INTEGER_TYPE);
+}
+
+static bool paramSupportUSmallInt(uint64_t typeFlag) {
+  return FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_USMALLINT_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_ALL_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_NUMERIC_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_INTEGER_TYPE);
+}
+
+static bool paramSupportUInt(uint64_t typeFlag) {
+  return FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_UINT_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_ALL_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_NUMERIC_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_INTEGER_TYPE);
+}
+
+static bool paramSupportUBigInt(uint64_t typeFlag) {
+  return FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_UBIGINT_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_ALL_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_NUMERIC_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_INTEGER_TYPE);
+}
+
+static bool paramSupportJSON(uint64_t typeFlag) {
+  return FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_JSON_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_ALL_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_VAR_TYPE);
+}
+
+static bool paramSupportVarBinary(uint64_t typeFlag) {
+  return FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_VARB_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_ALL_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_VAR_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_STRING_TYPE);
+}
+
+static bool paramSupportGeometry(uint64_t typeFlag) {
+  return FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_GEOMETRY_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_ALL_TYPE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_VAR_TYPE);
+}
+
+static bool paramSupportValueNode(uint64_t typeFlag) {
+  return FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_VALUE_NODE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_EXPR_NODE);
+}
+
+static bool paramSupportOperatorNode(uint64_t typeFlag) {
+  return FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_EXPR_NODE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_OPERATOR_NODE);
+}
+
+static bool paramSupportFunctionNode(uint64_t typeFlag) {
+  return FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_EXPR_NODE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_FUNCTION_NODE);
+}
+
+static bool paramSupportLogicConNode(uint64_t typeFlag) {
+  return FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_EXPR_NODE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_LOGIC_CONDITION_NODE);
+}
+
+static bool paramSupportCaseWhenNode(uint64_t typeFlag) {
+  return FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_EXPR_NODE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_CASE_WHEN_NODE);
+}
+
+static bool paramSupportColumnNode(uint64_t typeFlag) {
+  return FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_EXPR_NODE) ||
+         FUNC_MGT_TEST_MASK(typeFlag, FUNC_PARAM_SUPPORT_COLUMN_NODE);
+}
+
+static bool paramSupportNodeType(SNode* pNode, uint64_t typeFlag) {
+  switch (pNode->type) {
+    case QUERY_NODE_VALUE:
+      return paramSupportValueNode(typeFlag);
+    case QUERY_NODE_OPERATOR:
+      return paramSupportOperatorNode(typeFlag);
+    case QUERY_NODE_FUNCTION:
+      return paramSupportFunctionNode(typeFlag);
+    case QUERY_NODE_LOGIC_CONDITION:
+      return paramSupportLogicConNode(typeFlag);
+    case QUERY_NODE_CASE_WHEN:
+      return paramSupportCaseWhenNode(typeFlag);
+    case QUERY_NODE_COLUMN:
+      return paramSupportColumnNode(typeFlag);
+    default:
+      return false;
+  }
+}
+
+static bool paramSupportDataType(SDataType* pDataType, uint64_t typeFlag) {
+  switch (pDataType->type) {
+    case TSDB_DATA_TYPE_NULL:
+      return paramSupportNull(typeFlag);
+    case TSDB_DATA_TYPE_BOOL:
+      return paramSupportBool(typeFlag);
+    case TSDB_DATA_TYPE_TINYINT:
+      return paramSupportTinyint(typeFlag);
+    case TSDB_DATA_TYPE_SMALLINT:
+      return paramSupportSmallint(typeFlag);
+    case TSDB_DATA_TYPE_INT:
+      return paramSupportInt(typeFlag);
+    case TSDB_DATA_TYPE_BIGINT:
+      return paramSupportBigint(typeFlag);
+    case TSDB_DATA_TYPE_FLOAT:
+      return paramSupportFloat(typeFlag);
+    case TSDB_DATA_TYPE_DOUBLE:
+      return paramSupportDouble(typeFlag);
+    case TSDB_DATA_TYPE_VARCHAR:
+      return paramSupportVarchar(typeFlag);
+    case TSDB_DATA_TYPE_TIMESTAMP:
+      return paramSupportTimestamp(typeFlag);
+    case TSDB_DATA_TYPE_NCHAR:
+      return paramSupportNchar(typeFlag);
+    case TSDB_DATA_TYPE_UTINYINT:
+      return paramSupportUTinyInt(typeFlag);
+    case TSDB_DATA_TYPE_USMALLINT:
+      return paramSupportUSmallInt(typeFlag);
+    case TSDB_DATA_TYPE_UINT:
+      return paramSupportUInt(typeFlag);
+    case TSDB_DATA_TYPE_UBIGINT:
+      return paramSupportUBigInt(typeFlag);
+    case TSDB_DATA_TYPE_JSON:
+      return paramSupportJSON(typeFlag);
+    case TSDB_DATA_TYPE_VARBINARY:
+      return paramSupportVarBinary(typeFlag);
+    case TSDB_DATA_TYPE_GEOMETRY:
+      return paramSupportGeometry(typeFlag);
+    default:
+      return false;
+  }
+}
+
+int32_t validateParam(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
+  SNodeList*        paramList = pFunc->pParameterList;
+  SFunctionParaInfo paramInfo = funcMgtBuiltins[pFunc->funcId].parameters;
+
+  // check param num
+  if ((paramInfo.maxParamNum != -1 && LIST_LENGTH(paramList) > paramInfo.maxParamNum) ||
+      LIST_LENGTH(paramList) < paramInfo.minParamNum) {
     return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
   }
+  // check each param
+  for (int32_t i = 0; i < paramInfo.paramInfoPattern; i++) {
+    int32_t     paramIdx = 0;
+    SParamInfo* paramPattern = paramInfo.inputParaInfo[i];
+    bool        isMatch = true;
+    while (!paramPattern[paramIdx].isLastParam) {
+      for (int8_t j = paramPattern->startParam; j <= (paramPattern->endParam == -1 ? INT8_MAX : paramPattern->endParam); j++) {
+        if (j >= LIST_LENGTH(paramList)) {
+          isMatch = true;
+          break;
+        }
+        SNode* pNode = nodesListGetNode(paramList, j - 1);
+        // check node type
+        if (!paramSupportNodeType(pNode, paramPattern[paramIdx].validNodeType)) {
+          isMatch = false;
+          break;
+        }
+        // check data type
+        if (!paramSupportDataType(getSDataTypeFromNode(pNode), paramPattern[paramIdx].validDataType)) {
+          isMatch = false;
+          break;
+        }
+        // check range value
+        if (paramPattern[paramIdx].hasRange) {
+          if (pNode->type == QUERY_NODE_VALUE) {
+            SValueNode* pVal = (SValueNode*)pNode;
+            if ((double)pVal->datum.i < paramPattern[paramIdx].range.dMinVal ||
+                (double)pVal->datum.i > paramPattern[paramIdx].range.dMaxVal) {
+              isMatch = false;
+              break;
+            }
+            pVal->notReserved = true;
+          } else {
+            // for other node type, range check should be done in process function
+          }
+        }
+        // check fixed value
+        if (paramPattern[paramIdx].isFixedValue) {
+          if (pNode->type == QUERY_NODE_VALUE) {
+            SValueNode* pVal = (SValueNode*)pNode;
+            if (IS_NUMERIC_TYPE(getSDataTypeFromNode(pNode)->type)) {
+              for (int32_t k = 0; k < paramPattern[paramIdx].fixedValueSize; k++) {
+                if (pVal->datum.i == paramPattern[paramIdx].fixedNumValue[k]) {
+                  isMatch = true;
+                  break;
+                } else {
+                  isMatch = false;
+                }
+              }
+            } else if (IS_STR_DATA_TYPE(getSDataTypeFromNode(pNode)->type)) {
+              for (int32_t k = 0; k < paramPattern[paramIdx].fixedValueSize; k++) {
+                if (strcasecmp(pVal->literal, paramPattern[paramIdx].fixedValue[k]) == 0) {
+                  isMatch = true;
+                  break;
+                } else {
+                  isMatch = false;
+                }
+              }
+            }
+            if (!isMatch) {
+              break;
+            }
+            pVal->notReserved = true;
+          } else {
+            // for other node type, fixed value check should be done in process function
+          }
+        }
+        // check isTs
+        if (paramPattern[paramIdx].isTs) {
+          if (nodeType(pNode) != QUERY_NODE_COLUMN || !IS_TIMESTAMP_TYPE(getSDataTypeFromNode(pNode)->type) ||
+              !((SColumnNode*)pNode)->isPrimTs) {
+            isMatch = false;
+            break;
+          }
+        }
+        // check isPK
+        if (paramPattern[paramIdx].isPK) {
+          if (nodeType(pNode) != QUERY_NODE_COLUMN || !IS_INTEGER_TYPE(getSDataTypeFromNode(pNode)->type) ||
+              !((SColumnNode*)pNode)->isPk) {
+            isMatch = false;
+            break;
+          }
+        }
+        // check hasColumn
+        if (paramPattern[paramIdx].hasColumn) {
+          if (!nodesExprHasColumn(pNode)) {
+            isMatch = false;
+            break;
+          }
+        }
+      }
 
+      paramIdx++;
+      if (!isMatch) {
+        break;
+      }
+    }
+    if (isMatch) {
+      return TSDB_CODE_SUCCESS;
+    }
+  }
+  return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
+}
+
+// There is only one parameter of numeric type, and the return type is parameter type
+static int32_t translateInOutNum(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (!IS_NUMERIC_TYPE(paraType) && !IS_NULL_TYPE(paraType)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  } else if (IS_NULL_TYPE(paraType)) {
+  if (IS_NULL_TYPE(paraType)) {
     paraType = TSDB_DATA_TYPE_BIGINT;
   }
-
   pFunc->node.resType = (SDataType){.bytes = tDataTypes[paraType].bytes, .type = paraType};
   return TSDB_CODE_SUCCESS;
 }
 
 // There is only one parameter of numeric type, and the return type is parameter type
 static int32_t translateMinMax(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
 
   SDataType* dataType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0));
-  uint8_t paraType = dataType->type;
-  if (!IS_NUMERIC_TYPE(paraType) && !IS_NULL_TYPE(paraType) && !IS_STR_DATA_TYPE(paraType)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  } else if (IS_NULL_TYPE(paraType)) {
-    paraType = TSDB_DATA_TYPE_BIGINT;
-  }
+  uint8_t paraType = IS_NULL_TYPE(dataType->type) ? TSDB_DATA_TYPE_BIGINT : dataType->type;
   int32_t bytes = IS_STR_DATA_TYPE(paraType) ? dataType->bytes : tDataTypes[paraType].bytes;
   pFunc->node.resType = (SDataType){.bytes = bytes, .type = paraType};
   return TSDB_CODE_SUCCESS;
@@ -335,60 +621,31 @@ static int32_t translateMinMax(SFunctionNode* pFunc, char* pErrBuf, int32_t len)
 
 // There is only one parameter of numeric type, and the return type is double type
 static int32_t translateInNumOutDou(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (!IS_NUMERIC_TYPE(paraType) && !IS_NULL_TYPE(paraType)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = tDataTypes[TSDB_DATA_TYPE_DOUBLE].bytes, .type = TSDB_DATA_TYPE_DOUBLE};
   return TSDB_CODE_SUCCESS;
 }
 
 // There are two parameters of numeric type, and the return type is double type
 static int32_t translateIn2NumOutDou(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (2 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t para1Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  uint8_t para2Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 1))->type;
-  if ((!IS_NUMERIC_TYPE(para1Type) && !IS_NULL_TYPE(para1Type)) ||
-      (!IS_NUMERIC_TYPE(para2Type) && !IS_NULL_TYPE(para2Type))) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = tDataTypes[TSDB_DATA_TYPE_DOUBLE].bytes, .type = TSDB_DATA_TYPE_DOUBLE};
   return TSDB_CODE_SUCCESS;
 }
 
 // There is only one parameter of string type, and the return type is parameter type
 static int32_t translateInOutStr(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   SDataType* pRestType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0));
-  if (TSDB_DATA_TYPE_VARBINARY == pRestType->type || !IS_STR_DATA_TYPE(pRestType->type)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
 
   pFunc->node.resType = (SDataType){.bytes = pRestType->bytes, .type = pRestType->type};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateTrimStr(SFunctionNode* pFunc, char* pErrBuf, int32_t len, bool isLtrim) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
 
   SDataType* pRestType1 = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0));
-  if (TSDB_DATA_TYPE_VARBINARY == pRestType1->type || !IS_STR_DATA_TYPE(pRestType1->type)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
 
   int32_t numOfSpaces = 0;
   SNode*  pParamNode1 = nodesListGetNode(pFunc->pParameterList, 0);
@@ -414,45 +671,21 @@ static int32_t translateRtrim(SFunctionNode* pFunc, char* pErrBuf, int32_t len) 
 }
 
 static int32_t translateLogarithm(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  int32_t numOfParams = LIST_LENGTH(pFunc->pParameterList);
-  if (1 != numOfParams && 2 != numOfParams) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t para1Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (!IS_NUMERIC_TYPE(para1Type) && !IS_NULL_TYPE(para1Type)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  if (2 == numOfParams) {
-    uint8_t para2Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 1))->type;
-    if (!IS_NUMERIC_TYPE(para2Type) && !IS_NULL_TYPE(para2Type)) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = tDataTypes[TSDB_DATA_TYPE_DOUBLE].bytes, .type = TSDB_DATA_TYPE_DOUBLE};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateCount(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = tDataTypes[TSDB_DATA_TYPE_BIGINT].bytes, .type = TSDB_DATA_TYPE_BIGINT};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateSum(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
 
   uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (!IS_NUMERIC_TYPE(paraType) && !IS_NULL_TYPE(paraType)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
   uint8_t resType = 0;
   if (IS_SIGNED_NUMERIC_TYPE(paraType) || TSDB_DATA_TYPE_BOOL == paraType || IS_NULL_TYPE(paraType)) {
     resType = TSDB_DATA_TYPE_BIGINT;
@@ -467,119 +700,57 @@ static int32_t translateSum(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
 }
 
 static int32_t translateAvgPartial(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (!IS_NUMERIC_TYPE(paraType) && !IS_NULL_TYPE(paraType)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = getAvgInfoSize() + VARSTR_HEADER_SIZE, .type = TSDB_DATA_TYPE_BINARY};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateAvgMiddle(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t paraType = ((SExprNode*)nodesListGetNode(pFunc->pParameterList, 0))->resType.type;
-  if (TSDB_DATA_TYPE_BINARY != paraType) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = getAvgInfoSize() + VARSTR_HEADER_SIZE, .type = TSDB_DATA_TYPE_BINARY};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateAvgMerge(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (TSDB_DATA_TYPE_BINARY != paraType) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = tDataTypes[TSDB_DATA_TYPE_DOUBLE].bytes, .type = TSDB_DATA_TYPE_DOUBLE};
 
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateAvgState(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-
-  uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (!IS_NUMERIC_TYPE(paraType) && !IS_NULL_TYPE(paraType))
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = getAvgInfoSize() + VARSTR_HEADER_SIZE, .type = TSDB_DATA_TYPE_BINARY};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateAvgStateMerge(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = getAvgInfoSize() + VARSTR_HEADER_SIZE, .type = TSDB_DATA_TYPE_BINARY};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateStdPartial(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (!IS_NUMERIC_TYPE(paraType) && !IS_NULL_TYPE(paraType)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = getStdInfoSize() + VARSTR_HEADER_SIZE, .type = TSDB_DATA_TYPE_BINARY};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateStdMerge(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (TSDB_DATA_TYPE_BINARY != paraType) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = tDataTypes[TSDB_DATA_TYPE_DOUBLE].bytes, .type = TSDB_DATA_TYPE_DOUBLE};
 
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateStdState(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (!IS_NUMERIC_TYPE(paraType) && !IS_NULL_TYPE(paraType)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = getStdInfoSize() + VARSTR_HEADER_SIZE, .type = TSDB_DATA_TYPE_BINARY};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateStdStateMerge(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (TSDB_DATA_TYPE_BINARY != paraType) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = getStdInfoSize() + VARSTR_HEADER_SIZE, .type = TSDB_DATA_TYPE_BINARY};
 
   return TSDB_CODE_SUCCESS;
@@ -614,16 +785,7 @@ static int32_t translatePi(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
 }
 
 static int32_t translateRand(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (0 != LIST_LENGTH(pFunc->pParameterList) && 1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  if (1 == LIST_LENGTH(pFunc->pParameterList)) {
-    uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-    if (!IS_INTEGER_TYPE(paraType) && !IS_NULL_TYPE(paraType)) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-  }
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
 
   if (!pFunc->dual) {
     int32_t code = addPseudoParam(&pFunc->pParameterList);
@@ -638,42 +800,19 @@ static int32_t translateRand(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
 }
 
 static int32_t translateRound(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (2 != LIST_LENGTH(pFunc->pParameterList) && 1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
 
   uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (!IS_NUMERIC_TYPE(paraType) && !IS_NULL_TYPE(paraType)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  } else if (IS_NULL_TYPE(paraType)) {
+  if (IS_NULL_TYPE(paraType)) {
     paraType = TSDB_DATA_TYPE_BIGINT;
-  }
-
-  if (2 == LIST_LENGTH(pFunc->pParameterList)) {
-    uint8_t paraType2 = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 1))->type;
-    if (!IS_NUMERIC_TYPE(paraType2) && !IS_NULL_TYPE(paraType2)) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
   }
   pFunc->node.resType = (SDataType){.bytes = tDataTypes[paraType].bytes, .type = paraType};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateTrunc(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (2 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (!IS_NUMERIC_TYPE(paraType) && !IS_NULL_TYPE(paraType)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t paraType2 = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 1))->type;
-  if (!IS_NUMERIC_TYPE(paraType2) && !IS_NULL_TYPE(paraType2)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
   pFunc->node.resType = (SDataType){.bytes = tDataTypes[paraType].bytes, .type = paraType};
   return TSDB_CODE_SUCCESS;
 }
@@ -700,39 +839,8 @@ static int32_t translateTimezone(SFunctionNode* pFunc, char* pErrBuf, int32_t le
 }
 
 static int32_t translatePercentile(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   int32_t numOfParams = LIST_LENGTH(pFunc->pParameterList);
-  if (numOfParams < 2 || numOfParams > 11) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t para1Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (!IS_NUMERIC_TYPE(para1Type)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  for (int32_t i = 1; i < numOfParams; ++i) {
-    SValueNode* pValue = (SValueNode*)nodesListGetNode(pFunc->pParameterList, i);
-    if (QUERY_NODE_VALUE != nodeType(pValue)) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-    pValue->notReserved = true;
-
-    uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, i))->type;
-    if (!IS_NUMERIC_TYPE(paraType)) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-
-    double v = 0;
-    if (IS_INTEGER_TYPE(paraType)) {
-      v = (double)pValue->datum.i;
-    } else {
-      v = pValue->datum.d;
-    }
-
-    if (v < 0 || v > 100) {
-      return invaildFuncParaValueErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-  }
 
   // set result type
   if (numOfParams > 2) {
@@ -752,120 +860,17 @@ static bool validateApercentileAlgo(const SValueNode* pVal) {
 }
 
 static int32_t translateApercentile(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  int32_t numOfParams = LIST_LENGTH(pFunc->pParameterList);
-  if (2 != numOfParams && 3 != numOfParams) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  // param1
-  SNode* pParamNode1 = nodesListGetNode(pFunc->pParameterList, 1);
-  if (nodeType(pParamNode1) != QUERY_NODE_VALUE) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  SValueNode* pValue = (SValueNode*)pParamNode1;
-  if (pValue->datum.i < 0 || pValue->datum.i > 100) {
-    return invaildFuncParaValueErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  pValue->notReserved = true;
-
-  uint8_t para1Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  uint8_t para2Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 1))->type;
-  if (!IS_NUMERIC_TYPE(para1Type) || !IS_INTEGER_TYPE(para2Type)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  // param2
-  if (3 == numOfParams) {
-    uint8_t para3Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 2))->type;
-    if (!IS_STR_DATA_TYPE(para3Type)) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-
-    SNode* pParamNode2 = nodesListGetNode(pFunc->pParameterList, 2);
-    if (QUERY_NODE_VALUE != nodeType(pParamNode2) || !validateApercentileAlgo((SValueNode*)pParamNode2)) {
-      return buildFuncErrMsg(pErrBuf, len, TSDB_CODE_FUNC_FUNTION_ERROR,
-                             "Third parameter algorithm of apercentile must be 'default' or 't-digest'");
-    }
-
-    pValue = (SValueNode*)pParamNode2;
-    pValue->notReserved = true;
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = tDataTypes[TSDB_DATA_TYPE_DOUBLE].bytes, .type = TSDB_DATA_TYPE_DOUBLE};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateApercentileImpl(SFunctionNode* pFunc, char* pErrBuf, int32_t len, bool isPartial) {
-  int32_t numOfParams = LIST_LENGTH(pFunc->pParameterList);
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   if (isPartial) {
-    if (2 != numOfParams && 3 != numOfParams) {
-      return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-    // param1
-    SNode* pParamNode1 = nodesListGetNode(pFunc->pParameterList, 1);
-    if (nodeType(pParamNode1) != QUERY_NODE_VALUE) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-
-    SValueNode* pValue = (SValueNode*)pParamNode1;
-    if (pValue->datum.i < 0 || pValue->datum.i > 100) {
-      return invaildFuncParaValueErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-
-    pValue->notReserved = true;
-
-    uint8_t para1Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-    uint8_t para2Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 1))->type;
-    if (!IS_NUMERIC_TYPE(para1Type) || !IS_INTEGER_TYPE(para2Type)) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-
-    // param2
-    if (3 == numOfParams) {
-      uint8_t para3Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 2))->type;
-      if (!IS_STR_DATA_TYPE(para3Type)) {
-        return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-      }
-
-      SNode* pParamNode2 = nodesListGetNode(pFunc->pParameterList, 2);
-      if (QUERY_NODE_VALUE != nodeType(pParamNode2) || !validateApercentileAlgo((SValueNode*)pParamNode2)) {
-        return buildFuncErrMsg(pErrBuf, len, TSDB_CODE_FUNC_FUNTION_ERROR,
-                               "Third parameter algorithm of apercentile must be 'default' or 't-digest'");
-      }
-
-      pValue = (SValueNode*)pParamNode2;
-      pValue->notReserved = true;
-    }
-
     pFunc->node.resType =
         (SDataType){.bytes = getApercentileMaxSize() + VARSTR_HEADER_SIZE, .type = TSDB_DATA_TYPE_BINARY};
   } else {
-    // original percent param is reserved
-    if (3 != numOfParams && 2 != numOfParams) {
-      return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-    uint8_t para1Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-    uint8_t para2Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 1))->type;
-    if (TSDB_DATA_TYPE_BINARY != para1Type || !IS_INTEGER_TYPE(para2Type)) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-
-    if (3 == numOfParams) {
-      uint8_t para3Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 2))->type;
-      if (!IS_STR_DATA_TYPE(para3Type)) {
-        return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-      }
-      
-      SNode* pParamNode2 = nodesListGetNode(pFunc->pParameterList, 2);
-      if (QUERY_NODE_VALUE != nodeType(pParamNode2) || !validateApercentileAlgo((SValueNode*)pParamNode2)) {
-        return buildFuncErrMsg(pErrBuf, len, TSDB_CODE_FUNC_FUNTION_ERROR,
-                               "Third parameter algorithm of apercentile must be 'default' or 't-digest'");
-      }
-      }
-
     pFunc->node.resType = (SDataType){.bytes = tDataTypes[TSDB_DATA_TYPE_DOUBLE].bytes, .type = TSDB_DATA_TYPE_DOUBLE};
   }
 
@@ -905,34 +910,7 @@ static int32_t translateVgVerColumn(SFunctionNode* pFunc, char* pErrBuf, int32_t
 }
 
 static int32_t translateTopBot(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  int32_t numOfParams = LIST_LENGTH(pFunc->pParameterList);
-  if (2 != numOfParams) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t para1Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  uint8_t para2Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 1))->type;
-  if (!IS_NUMERIC_TYPE(para1Type) || !IS_INTEGER_TYPE(para2Type)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  // param1
-  SNode* pParamNode1 = nodesListGetNode(pFunc->pParameterList, 1);
-  if (nodeType(pParamNode1) != QUERY_NODE_VALUE) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  SValueNode* pValue = (SValueNode*)pParamNode1;
-  if (!IS_INTEGER_TYPE(pValue->node.resType.type)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  if (pValue->datum.i < 1 || pValue->datum.i > TOP_BOTTOM_QUERY_LIMIT) {
-    return invaildFuncParaValueErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  pValue->notReserved = true;
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   // set result type
   SDataType* pType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0));
   pFunc->node.resType = (SDataType){.bytes = pType->bytes, .type = pType->type};
@@ -968,34 +946,16 @@ int32_t apercentileCreateMergeParam(SNodeList* pRawParameters, SNode* pPartialRe
 }
 
 static int32_t translateSpread(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (!IS_NUMERIC_TYPE(paraType) && !IS_TIMESTAMP_TYPE(paraType)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = tDataTypes[TSDB_DATA_TYPE_DOUBLE].bytes, .type = TSDB_DATA_TYPE_DOUBLE};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateSpreadImpl(SFunctionNode* pFunc, char* pErrBuf, int32_t len, bool isPartial) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   if (isPartial) {
-    if (!IS_NUMERIC_TYPE(paraType) && !IS_TIMESTAMP_TYPE(paraType)) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
     pFunc->node.resType = (SDataType){.bytes = getSpreadInfoSize() + VARSTR_HEADER_SIZE, .type = TSDB_DATA_TYPE_BINARY};
   } else {
-    if (TSDB_DATA_TYPE_BINARY != paraType) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
     pFunc->node.resType = (SDataType){.bytes = tDataTypes[TSDB_DATA_TYPE_DOUBLE].bytes, .type = TSDB_DATA_TYPE_DOUBLE};
   }
 
@@ -1011,59 +971,26 @@ static int32_t translateSpreadMerge(SFunctionNode* pFunc, char* pErrBuf, int32_t
 }
 
 static int32_t translateSpreadState(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (!IS_NUMERIC_TYPE(paraType) && !IS_TIMESTAMP_TYPE(paraType)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = getSpreadInfoSize() + VARSTR_HEADER_SIZE, .type = TSDB_DATA_TYPE_BINARY};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateSpreadStateMerge(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-  uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (paraType != TSDB_DATA_TYPE_BINARY) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = getSpreadInfoSize() + VARSTR_HEADER_SIZE, .type = TSDB_DATA_TYPE_BINARY};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateElapsed(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   int32_t numOfParams = LIST_LENGTH(pFunc->pParameterList);
-  if (1 != numOfParams && 2 != numOfParams) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  SNode* pPara1 = nodesListGetNode(pFunc->pParameterList, 0);
-  if (QUERY_NODE_COLUMN != nodeType(pPara1) || PRIMARYKEY_TIMESTAMP_COL_ID != ((SColumnNode*)pPara1)->colId) {
-    return buildFuncErrMsg(pErrBuf, len, TSDB_CODE_FUNC_FUNTION_ERROR,
-                           "The first parameter of the ELAPSED function can only be the timestamp primary key");
-  }
-
   // param1
   if (2 == numOfParams) {
-    SNode* pParamNode1 = nodesListGetNode(pFunc->pParameterList, 1);
-    if (QUERY_NODE_VALUE != nodeType(pParamNode1)) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-
-    SValueNode* pValue = (SValueNode*)pParamNode1;
-
-    pValue->notReserved = true;
-
-    if (!IS_INTEGER_TYPE(pValue->node.resType.type)) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-
     uint8_t dbPrec = pFunc->node.resType.precision;
 
+
+    // TODO(smj) : add this check to validateParam
     int32_t code = validateTimeUnitParam(dbPrec, (SValueNode*)nodesListGetNode(pFunc->pParameterList, 1));
     if (code == TSDB_CODE_FUNC_TIME_UNIT_TOO_SMALL) {
       return buildFuncErrMsg(pErrBuf, len, code,
@@ -1146,29 +1073,7 @@ static int32_t translateElapsedMerge(SFunctionNode* pFunc, char* pErrBuf, int32_
 }
 
 static int32_t translateLeastSQR(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  int32_t numOfParams = LIST_LENGTH(pFunc->pParameterList);
-  if (3 != numOfParams) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  for (int32_t i = 0; i < numOfParams; ++i) {
-    SNode* pParamNode = nodesListGetNode(pFunc->pParameterList, i);
-    if (i > 0) {  // param1 & param2
-      if (QUERY_NODE_VALUE != nodeType(pParamNode)) {
-        return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-      }
-
-      SValueNode* pValue = (SValueNode*)pParamNode;
-
-      pValue->notReserved = true;
-    }
-
-    uint8_t colType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, i))->type;
-    if (!IS_NUMERIC_TYPE(colType)) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = LEASTSQUARES_BUFF_LENGTH, .type = TSDB_DATA_TYPE_BINARY};
   return TSDB_CODE_SUCCESS;
 }
@@ -1363,32 +1268,15 @@ static int32_t validateHistogramBinDesc(char* binDescStr, int8_t binType, char* 
 }
 
 static int32_t translateHistogram(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   int32_t numOfParams = LIST_LENGTH(pFunc->pParameterList);
-  if (4 != numOfParams) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t colType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (!IS_NUMERIC_TYPE(colType)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  // param1 ~ param3
-  if (getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 1))->type != TSDB_DATA_TYPE_BINARY ||
-      getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 2))->type != TSDB_DATA_TYPE_BINARY ||
-      !IS_INTEGER_TYPE(getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 3))->type)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
 
   int8_t binType;
   char*  binDesc;
-  for (int32_t i = 1; i < numOfParams; ++i) {
-    SNode* pParamNode = nodesListGetNode(pFunc->pParameterList, i);
-    if (QUERY_NODE_VALUE != nodeType(pParamNode)) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
 
-    SValueNode* pValue = (SValueNode*)pParamNode;
+  // TODO(smj) : add this to validateParam
+  for (int32_t i = 1; i < numOfParams; ++i) {
+    SValueNode* pValue = (SValueNode*)nodesListGetNode(pFunc->pParameterList, i);
 
     pValue->notReserved = true;
 
@@ -1408,11 +1296,6 @@ static int32_t translateHistogram(SFunctionNode* pFunc, char* pErrBuf, int32_t l
         return buildFuncErrMsg(pErrBuf, len, TSDB_CODE_FUNC_FUNTION_ERROR, errMsg);
       }
     }
-
-    if (i == 3 && pValue->datum.i != 1 && pValue->datum.i != 0) {
-      return buildFuncErrMsg(pErrBuf, len, TSDB_CODE_FUNC_FUNTION_ERROR,
-                             "HISTOGRAM function normalized parameter should be 0/1");
-    }
   }
 
   pFunc->node.resType = (SDataType){.bytes = 512, .type = TSDB_DATA_TYPE_BINARY};
@@ -1420,33 +1303,13 @@ static int32_t translateHistogram(SFunctionNode* pFunc, char* pErrBuf, int32_t l
 }
 
 static int32_t translateHistogramImpl(SFunctionNode* pFunc, char* pErrBuf, int32_t len, bool isPartial) {
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   int32_t numOfParams = LIST_LENGTH(pFunc->pParameterList);
   if (isPartial) {
-    if (4 != numOfParams) {
-      return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-
-    uint8_t colType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-    if (!IS_NUMERIC_TYPE(colType)) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-
-    // param1 ~ param3
-    if (getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 1))->type != TSDB_DATA_TYPE_BINARY ||
-        getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 2))->type != TSDB_DATA_TYPE_BINARY ||
-        !IS_INTEGER_TYPE(getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 3))->type)) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-
     int8_t binType;
     char*  binDesc;
     for (int32_t i = 1; i < numOfParams; ++i) {
-      SNode* pParamNode = nodesListGetNode(pFunc->pParameterList, i);
-      if (QUERY_NODE_VALUE != nodeType(pParamNode)) {
-        return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-      }
-
-      SValueNode* pValue = (SValueNode*)pParamNode;
+      SValueNode* pValue = (SValueNode *)nodesListGetNode(pFunc->pParameterList, i);
 
       pValue->notReserved = true;
 
@@ -1466,24 +1329,11 @@ static int32_t translateHistogramImpl(SFunctionNode* pFunc, char* pErrBuf, int32
           return buildFuncErrMsg(pErrBuf, len, TSDB_CODE_FUNC_FUNTION_ERROR, errMsg);
         }
       }
-
-      if (i == 3 && pValue->datum.i != 1 && pValue->datum.i != 0) {
-        return buildFuncErrMsg(pErrBuf, len, TSDB_CODE_FUNC_FUNTION_ERROR,
-                               "HISTOGRAM function normalized parameter should be 0/1");
-      }
     }
 
     pFunc->node.resType =
         (SDataType){.bytes = getHistogramInfoSize() + VARSTR_HEADER_SIZE, .type = TSDB_DATA_TYPE_BINARY};
   } else {
-    if (1 != numOfParams) {
-      return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-
-    if (getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type != TSDB_DATA_TYPE_BINARY) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-
     pFunc->node.resType = (SDataType){.bytes = 512, .type = TSDB_DATA_TYPE_BINARY};
   }
   return TSDB_CODE_SUCCESS;
@@ -1498,19 +1348,13 @@ static int32_t translateHistogramMerge(SFunctionNode* pFunc, char* pErrBuf, int3
 }
 
 static int32_t translateHLL(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = tDataTypes[TSDB_DATA_TYPE_BIGINT].bytes, .type = TSDB_DATA_TYPE_BIGINT};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateHLLImpl(SFunctionNode* pFunc, char* pErrBuf, int32_t len, bool isPartial) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   if (isPartial) {
     pFunc->node.resType =
         (SDataType){.bytes = getHistogramInfoSize() + VARSTR_HEADER_SIZE, .type = TSDB_DATA_TYPE_BINARY};
@@ -1534,14 +1378,7 @@ static int32_t translateHLLState(SFunctionNode* pFunc, char* pErrBuf, int32_t le
 }
 
 static int32_t translateHLLStateMerge(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-  if (getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type != TSDB_DATA_TYPE_BINARY) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType =
     (SDataType){.bytes = getHistogramInfoSize() + VARSTR_HEADER_SIZE, .type = TSDB_DATA_TYPE_BINARY};
   return TSDB_CODE_SUCCESS;
@@ -1561,87 +1398,15 @@ static bool validateStateOper(const SValueNode* pVal) {
 }
 
 static int32_t translateStateCount(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  int32_t numOfParams = LIST_LENGTH(pFunc->pParameterList);
-  if (3 != numOfParams) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t colType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (!IS_NUMERIC_TYPE(colType)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  // param1 & param2
-  for (int32_t i = 1; i < numOfParams; ++i) {
-    SNode* pParamNode = nodesListGetNode(pFunc->pParameterList, i);
-    if (QUERY_NODE_VALUE != nodeType(pParamNode)) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-
-    SValueNode* pValue = (SValueNode*)pParamNode;
-
-    if (i == 1 && !validateStateOper(pValue)) {
-      return buildFuncErrMsg(pErrBuf, len, TSDB_CODE_FUNC_FUNTION_ERROR,
-                             "Second parameter of STATECOUNT function"
-                             "must be one of the following: 'GE', 'GT', 'LE', 'LT', 'EQ', 'NE'");
-    }
-
-    pValue->notReserved = true;
-  }
-
-  if (getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 1))->type != TSDB_DATA_TYPE_BINARY ||
-      (getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 2))->type != TSDB_DATA_TYPE_BIGINT &&
-       getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 2))->type != TSDB_DATA_TYPE_DOUBLE)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   // set result type
   pFunc->node.resType = (SDataType){.bytes = tDataTypes[TSDB_DATA_TYPE_BIGINT].bytes, .type = TSDB_DATA_TYPE_BIGINT};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateStateDuration(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   int32_t numOfParams = LIST_LENGTH(pFunc->pParameterList);
-  if (3 != numOfParams && 4 != numOfParams) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t colType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (!IS_NUMERIC_TYPE(colType)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  // param1, param2 & param3
-  for (int32_t i = 1; i < numOfParams; ++i) {
-    SNode* pParamNode = nodesListGetNode(pFunc->pParameterList, i);
-    if (QUERY_NODE_VALUE != nodeType(pParamNode)) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-
-    SValueNode* pValue = (SValueNode*)pParamNode;
-
-    if (i == 1 && !validateStateOper(pValue)) {
-      return buildFuncErrMsg(pErrBuf, len, TSDB_CODE_FUNC_FUNTION_ERROR,
-                             "Second parameter of STATEDURATION function"
-                             "must be one of the following: 'GE', 'GT', 'LE', 'LT', 'EQ', 'NE'");
-    } else if (i == 3 && pValue->datum.i == 0) {
-      return buildFuncErrMsg(pErrBuf, len, TSDB_CODE_FUNC_FUNTION_ERROR,
-                             "STATEDURATION function time unit parameter should be greater than db precision");
-    }
-
-    pValue->notReserved = true;
-  }
-
-  if (getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 1))->type != TSDB_DATA_TYPE_BINARY ||
-      (getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 2))->type != TSDB_DATA_TYPE_BIGINT &&
-       getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 2))->type != TSDB_DATA_TYPE_DOUBLE)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  if (numOfParams == 4 &&
-      getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 3))->type != TSDB_DATA_TYPE_BIGINT) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
 
   if (numOfParams == 4) {
     uint8_t dbPrec = pFunc->node.resType.precision;
@@ -1663,26 +1428,18 @@ static int32_t translateStateDuration(SFunctionNode* pFunc, char* pErrBuf, int32
 }
 
 static int32_t translateCsum(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   uint8_t colType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
   uint8_t resType;
-  if (!IS_NUMERIC_TYPE(colType)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
+  if (IS_SIGNED_NUMERIC_TYPE(colType)) {
+    resType = TSDB_DATA_TYPE_BIGINT;
+  } else if (IS_UNSIGNED_NUMERIC_TYPE(colType)) {
+    resType = TSDB_DATA_TYPE_UBIGINT;
+  } else if (IS_FLOAT_TYPE(colType)) {
+    resType = TSDB_DATA_TYPE_DOUBLE;
   } else {
-    if (IS_SIGNED_NUMERIC_TYPE(colType)) {
-      resType = TSDB_DATA_TYPE_BIGINT;
-    } else if (IS_UNSIGNED_NUMERIC_TYPE(colType)) {
-      resType = TSDB_DATA_TYPE_UBIGINT;
-    } else if (IS_FLOAT_TYPE(colType)) {
-      resType = TSDB_DATA_TYPE_DOUBLE;
-    } else {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
+    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
   }
-
   pFunc->node.resType = (SDataType){.bytes = tDataTypes[resType].bytes, .type = resType};
   return TSDB_CODE_SUCCESS;
 }
@@ -1690,144 +1447,37 @@ static int32_t translateCsum(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
 static EFuncReturnRows csumEstReturnRows(SFunctionNode* pFunc) { return FUNC_RETURN_ROWS_N; }
 
 static int32_t translateMavg(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (2 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t colType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  // param1
-  SNode* pParamNode1 = nodesListGetNode(pFunc->pParameterList, 1);
-  if (QUERY_NODE_VALUE != nodeType(pParamNode1)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  SValueNode* pValue = (SValueNode*)pParamNode1;
-  if (pValue->datum.i < 1 || pValue->datum.i > 1000) {
-    return invaildFuncParaValueErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  pValue->notReserved = true;
-
-  uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 1))->type;
-  if (!IS_NUMERIC_TYPE(colType) || !IS_INTEGER_TYPE(paraType)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = tDataTypes[TSDB_DATA_TYPE_DOUBLE].bytes, .type = TSDB_DATA_TYPE_DOUBLE};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateSample(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (2 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
 
   SDataType* pSDataType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0));
   uint8_t    colType = pSDataType->type;
 
-  // param1
-  SNode* pParamNode1 = nodesListGetNode(pFunc->pParameterList, 1);
-  if (QUERY_NODE_VALUE != nodeType(pParamNode1)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  SValueNode* pValue = (SValueNode*)pParamNode1;
-  if (pValue->datum.i < 1 || pValue->datum.i > 1000) {
-    return invaildFuncParaValueErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  pValue->notReserved = true;
-
-  uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 1))->type;
-  if (!IS_INTEGER_TYPE(paraType)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
   // set result type
-  if (IS_STR_DATA_TYPE(colType)) {
-    pFunc->node.resType = (SDataType){.bytes = pSDataType->bytes, .type = colType};
-  } else {
-    pFunc->node.resType = (SDataType){.bytes = tDataTypes[colType].bytes, .type = colType};
-  }
-
+  pFunc->node.resType = (SDataType){.bytes = IS_STR_DATA_TYPE(colType) ? pSDataType->bytes : tDataTypes[colType].bytes,
+                                    .type = colType};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateTail(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  int32_t numOfParams = LIST_LENGTH(pFunc->pParameterList);
-  if (2 != numOfParams && 3 != numOfParams) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
 
   SDataType* pSDataType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0));
   uint8_t    colType = pSDataType->type;
 
-  // param1 & param2
-  for (int32_t i = 1; i < numOfParams; ++i) {
-    SNode* pParamNode = nodesListGetNode(pFunc->pParameterList, i);
-    if (QUERY_NODE_VALUE != nodeType(pParamNode)) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-
-    SValueNode* pValue = (SValueNode*)pParamNode;
-
-    if ((IS_SIGNED_NUMERIC_TYPE(pValue->node.resType.type) ? pValue->datum.i : pValue->datum.u) < ((i > 1) ? 0 : 1) ||
-        (IS_SIGNED_NUMERIC_TYPE(pValue->node.resType.type) ? pValue->datum.i : pValue->datum.u) > 100) {
-      return buildFuncErrMsg(pErrBuf, len, TSDB_CODE_FUNC_FUNTION_ERROR,
-                             "TAIL function second parameter should be in range [1, 100], "
-                             "third parameter should be in range [0, 100]");
-    }
-
-    pValue->notReserved = true;
-
-    uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, i))->type;
-    if (!IS_INTEGER_TYPE(paraType)) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-  }
-
   // set result type
-  if (IS_STR_DATA_TYPE(colType)) {
-    pFunc->node.resType = (SDataType){.bytes = pSDataType->bytes, .type = colType};
-  } else {
-    pFunc->node.resType = (SDataType){.bytes = tDataTypes[colType].bytes, .type = colType};
-  }
+  pFunc->node.resType = (SDataType){.bytes = IS_STR_DATA_TYPE(colType) ? pSDataType->bytes : tDataTypes[colType].bytes,
+                                    .type = colType};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateDerivative(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (3 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t colType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-
-  // param1
-  SNode*      pParamNode1 = nodesListGetNode(pFunc->pParameterList, 1);
-  SValueNode* pValue1 = (SValueNode*)pParamNode1;
-  if (QUERY_NODE_VALUE != nodeType(pParamNode1)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  if (pValue1->datum.i <= 0) {
-    return invaildFuncParaValueErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  SValueNode* pValue = (SValueNode*)pParamNode1;
-  pValue->notReserved = true;
-
-  if (!IS_NUMERIC_TYPE(colType)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  SNode*      pParamNode2 = nodesListGetNode(pFunc->pParameterList, 2);
-  SValueNode* pValue2 = (SValueNode*)pParamNode2;
-  pValue2->notReserved = true;
-
-  if (pValue2->datum.i != 0 && pValue2->datum.i != 1) {
-    return invaildFuncParaValueErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = tDataTypes[TSDB_DATA_TYPE_DOUBLE].bytes, .type = TSDB_DATA_TYPE_DOUBLE};
   return TSDB_CODE_SUCCESS;
 }
@@ -1838,16 +1488,7 @@ static EFuncReturnRows derivativeEstReturnRows(SFunctionNode* pFunc) {
 }
 
 static int32_t translateIrate(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t colType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-
-  if (!IS_NUMERIC_TYPE(colType)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   // add database precision as param
   uint8_t dbPrec = pFunc->node.resType.precision;
   int32_t code = addUint8Param(&pFunc->pParameterList, dbPrec);
@@ -1860,23 +1501,11 @@ static int32_t translateIrate(SFunctionNode* pFunc, char* pErrBuf, int32_t len) 
 }
 
 static int32_t translateIrateImpl(SFunctionNode* pFunc, char* pErrBuf, int32_t len, bool isPartial) {
-  uint8_t colType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   if (isPartial) {
-    if (3 != LIST_LENGTH(pFunc->pParameterList) && 4 != LIST_LENGTH(pFunc->pParameterList)) {
-      return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-    if (!IS_NUMERIC_TYPE(colType)) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
     int32_t pkBytes = (pFunc->hasPk) ? pFunc->pkBytes : 0;
     pFunc->node.resType = (SDataType){.bytes = getIrateInfoSize(pkBytes) + VARSTR_HEADER_SIZE, .type = TSDB_DATA_TYPE_BINARY};
   } else {
-    if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-      return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-    if (TSDB_DATA_TYPE_BINARY != colType) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
     pFunc->node.resType = (SDataType){.bytes = tDataTypes[TSDB_DATA_TYPE_DOUBLE].bytes, .type = TSDB_DATA_TYPE_DOUBLE};
 
     // add database precision as param
@@ -1886,8 +1515,6 @@ static int32_t translateIrateImpl(SFunctionNode* pFunc, char* pErrBuf, int32_t l
       return code;
     }
   }
-
-
   return TSDB_CODE_SUCCESS;
 }
 
@@ -1900,76 +1527,7 @@ static int32_t translateIrateMerge(SFunctionNode* pFunc, char* pErrBuf, int32_t 
 }
 
 static int32_t translateInterp(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  int32_t numOfParams = LIST_LENGTH(pFunc->pParameterList);
-  uint8_t dbPrec = pFunc->node.resType.precision;
-
-  if (2 < numOfParams) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t nodeType = nodeType(nodesListGetNode(pFunc->pParameterList, 0));
-  uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if ((!IS_NUMERIC_TYPE(paraType) && !IS_BOOLEAN_TYPE(paraType)) || QUERY_NODE_VALUE == nodeType) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  if (2 == numOfParams) {
-    nodeType = nodeType(nodesListGetNode(pFunc->pParameterList, 1));
-    paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 1))->type;
-    if (!IS_INTEGER_TYPE(paraType) || QUERY_NODE_VALUE != nodeType) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-
-    SValueNode* pValue = (SValueNode*)nodesListGetNode(pFunc->pParameterList, 1);
-    if (pValue->datum.i != 0 && pValue->datum.i != 1) {
-      return buildFuncErrMsg(pErrBuf, len, TSDB_CODE_FUNC_FUNTION_ERROR,
-                             "INTERP function second parameter should be 0/1");
-    }
-
-    pValue->notReserved = true;
-  }
-
-#if 0
-  if (3 <= numOfParams) {
-    int64_t timeVal[2] = {0};
-    for (int32_t i = 1; i < 3; ++i) {
-      nodeType = nodeType(nodesListGetNode(pFunc->pParameterList, i));
-      paraType = ((SExprNode*)nodesListGetNode(pFunc->pParameterList, i))->resType.type;
-      if (!IS_STR_DATA_TYPE(paraType) || QUERY_NODE_VALUE != nodeType) {
-        return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-      }
-
-      SValueNode* pValue = (SValueNode*)nodesListGetNode(pFunc->pParameterList, i);
-      int32_t     ret = convertStringToTimestamp(paraType, pValue->datum.p, dbPrec, &timeVal[i - 1]);
-      if (ret != TSDB_CODE_SUCCESS) {
-        return invaildFuncParaValueErrMsg(pErrBuf, len, pFunc->functionName);
-      }
-    }
-
-    if (timeVal[0] > timeVal[1]) {
-      return buildFuncErrMsg(pErrBuf, len, TSDB_CODE_FUNC_FUNTION_ERROR, "INTERP function invalid time range");
-    }
-  }
-
-  if (4 == numOfParams) {
-    nodeType = nodeType(nodesListGetNode(pFunc->pParameterList, 3));
-    paraType = ((SExprNode*)nodesListGetNode(pFunc->pParameterList, 3))->resType.type;
-    if (!IS_INTEGER_TYPE(paraType) || QUERY_NODE_VALUE != nodeType) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-
-    int32_t ret = validateTimeUnitParam(dbPrec, (SValueNode*)nodesListGetNode(pFunc->pParameterList, 3));
-    if (ret == TIME_UNIT_TOO_SMALL) {
-      return buildFuncErrMsg(pErrBuf, len, TSDB_CODE_FUNC_FUNTION_ERROR,
-                             "INTERP function time interval parameter should be greater than db precision");
-    } else if (ret == TIME_UNIT_INVALID) {
-      return buildFuncErrMsg(
-          pErrBuf, len, TSDB_CODE_FUNC_FUNTION_ERROR,
-          "INTERP function time interval parameter should be one of the following: [1b, 1u, 1a, 1s, 1m, 1h, 1d, 1w]");
-    }
-  }
-#endif
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = ((SExprNode*)nodesListGetNode(pFunc->pParameterList, 0))->resType;
   return TSDB_CODE_SUCCESS;
 }
@@ -1985,42 +1543,21 @@ static EFuncReturnRows interpEstReturnRows(SFunctionNode* pFunc) {
 
 static int32_t translateFirstLast(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
   // forbid null as first/last input, since first(c0, null, 1) may have different number of input
-  int32_t numOfParams = LIST_LENGTH(pFunc->pParameterList);
-
-  for (int32_t i = 0; i < numOfParams; ++i) {
-    uint8_t nodeType = nodeType(nodesListGetNode(pFunc->pParameterList, i));
-    uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, i))->type;
-    if (IS_NULL_TYPE(paraType) && QUERY_NODE_VALUE == nodeType) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = *getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0));
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateFirstLastImpl(SFunctionNode* pFunc, char* pErrBuf, int32_t len, bool isPartial) {
   // first(col_list) will be rewritten as first(col)
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   SNode*  pPara = nodesListGetNode(pFunc->pParameterList, 0);
-  uint8_t paraType = getSDataTypeFromNode(pPara)->type;
   int32_t paraBytes = getSDataTypeFromNode(pPara)->bytes;
   if (isPartial) {
-    int32_t numOfParams = LIST_LENGTH(pFunc->pParameterList);
-    for (int32_t i = 0; i < numOfParams; ++i) {
-      uint8_t nodeType = nodeType(nodesListGetNode(pFunc->pParameterList, i));
-      uint8_t pType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, i))->type;
-      if (IS_NULL_TYPE(pType) && QUERY_NODE_VALUE == nodeType) {
-        return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-      }
-    }
     int32_t pkBytes = (pFunc->hasPk) ? pFunc->pkBytes : 0;
     pFunc->node.resType =
         (SDataType){.bytes = getFirstLastInfoSize(paraBytes, pkBytes) + VARSTR_HEADER_SIZE, .type = TSDB_DATA_TYPE_BINARY};
   } else {
-    if (TSDB_DATA_TYPE_BINARY != paraType) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-
     pFunc->node.resType = ((SExprNode*)pPara)->resType;
   }
   return TSDB_CODE_SUCCESS;
@@ -2035,6 +1572,7 @@ static int32_t translateFirstLastMerge(SFunctionNode* pFunc, char* pErrBuf, int3
 }
 
 static int32_t translateFirstLastState(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   SNode*  pPara = nodesListGetNode(pFunc->pParameterList, 0);
   int32_t paraBytes = getSDataTypeFromNode(pPara)->bytes;
 
@@ -2045,29 +1583,17 @@ static int32_t translateFirstLastState(SFunctionNode* pFunc, char* pErrBuf, int3
 }
 
 static int32_t translateFirstLastStateMerge(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   SNode*  pPara = nodesListGetNode(pFunc->pParameterList, 0);
   int32_t paraBytes = getSDataTypeFromNode(pPara)->bytes;
-  uint8_t paraType = getSDataTypeFromNode(pPara)->type;
-  if (paraType != TSDB_DATA_TYPE_BINARY) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
 
   pFunc->node.resType = (SDataType){.bytes = paraBytes, .type = TSDB_DATA_TYPE_BINARY};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateUniqueMode(SFunctionNode* pFunc, char* pErrBuf, int32_t len, bool isUnique) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  SNode* pPara = nodesListGetNode(pFunc->pParameterList, 0);
-  if (!nodesExprHasColumn(pPara)) {
-    return buildFuncErrMsg(pErrBuf, len, TSDB_CODE_FUNC_FUNTION_ERROR, "The parameters of %s must contain columns",
-                           isUnique ? "UNIQUE" : "MODE");
-  }
-
-  pFunc->node.resType = ((SExprNode*)pPara)->resType;
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
+  pFunc->node.resType = *getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0));
   return TSDB_CODE_SUCCESS;
 }
 
@@ -2121,37 +1647,8 @@ static int32_t translateForecastConf(SFunctionNode* pFunc, char* pErrBuf, int32_
 static EFuncReturnRows forecastEstReturnRows(SFunctionNode* pFunc) { return FUNC_RETURN_ROWS_N; }
 
 static int32_t translateDiff(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  int32_t numOfParams = LIST_LENGTH(pFunc->pParameterList);
-  if (numOfParams > 2) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   uint8_t colType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (!IS_INTEGER_TYPE(colType) && !IS_FLOAT_TYPE(colType) && TSDB_DATA_TYPE_BOOL != colType &&
-      !IS_TIMESTAMP_TYPE(colType)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  // param1
-  if (numOfParams == 2) {
-    uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 1))->type;
-    if (!IS_INTEGER_TYPE(paraType)) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-
-    SNode* pParamNode1 = nodesListGetNode(pFunc->pParameterList, 1);
-    if (QUERY_NODE_VALUE != nodeType(pParamNode1)) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-
-    SValueNode* pValue = (SValueNode*)pParamNode1;
-    if (pValue->datum.i < 0 || pValue->datum.i > 3) {
-      return buildFuncErrMsg(pErrBuf, len, TSDB_CODE_FUNC_FUNTION_ERROR,
-                             "Second parameter of DIFF function should be a number between 0 and 3.");
-    }
-
-    pValue->notReserved = true;
-  }
 
   uint8_t resType;
   if (IS_SIGNED_NUMERIC_TYPE(colType) || IS_TIMESTAMP_TYPE(colType) || TSDB_DATA_TYPE_BOOL == colType) {
@@ -2174,64 +1671,30 @@ static EFuncReturnRows diffEstReturnRows(SFunctionNode* pFunc) {
 }
 
 static int32_t translateLength(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (!IS_STR_DATA_TYPE(paraType) && !IS_NULL_TYPE(paraType)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = tDataTypes[TSDB_DATA_TYPE_BIGINT].bytes, .type = TSDB_DATA_TYPE_BIGINT};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateCharLength(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (paraType == TSDB_DATA_TYPE_VARBINARY || (!IS_STR_DATA_TYPE(paraType) && !IS_NULL_TYPE(paraType))) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = tDataTypes[TSDB_DATA_TYPE_BIGINT].bytes, .type = TSDB_DATA_TYPE_BIGINT};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateConcatImpl(SFunctionNode* pFunc, char* pErrBuf, int32_t len, int32_t minParaNum,
                                    int32_t maxParaNum, bool hasSep) {
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   int32_t numOfParams = LIST_LENGTH(pFunc->pParameterList);
-  if (numOfParams < minParaNum || numOfParams > maxParaNum) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
 
   uint8_t resultType = TSDB_DATA_TYPE_BINARY;
   int32_t resultBytes = 0;
   int32_t sepBytes = 0;
 
-  // concat_ws separator should be constant string
-  if (hasSep) {
-    SNode* pPara = nodesListGetNode(pFunc->pParameterList, 0);
-    if (nodeType(pPara) != QUERY_NODE_VALUE) {
-      return buildFuncErrMsg(pErrBuf, len, TSDB_CODE_FUNC_FUNTION_ERROR,
-                             "The first parameter of CONCAT_WS function can only be constant string");
-    }
-  }
-
   /* For concat/concat_ws function, if params have NCHAR type, promote the final result to NCHAR */
   for (int32_t i = 0; i < numOfParams; ++i) {
     SNode*  pPara = nodesListGetNode(pFunc->pParameterList, i);
     uint8_t paraType = getSDataTypeFromNode(pPara)->type;
-    if (TSDB_DATA_TYPE_VARBINARY == paraType) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-
-    if (!IS_STR_DATA_TYPE(paraType) && !IS_NULL_TYPE(paraType)) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
     if (TSDB_DATA_TYPE_NCHAR == paraType) {
       resultType = paraType;
     }
@@ -2275,129 +1738,48 @@ static int32_t translateConcatWs(SFunctionNode* pFunc, char* pErrBuf, int32_t le
 }
 
 static int32_t translateSubstr(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  int32_t numOfParams = LIST_LENGTH(pFunc->pParameterList);
-  if (2 != numOfParams && 3 != numOfParams) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   SExprNode* pPara0 = (SExprNode*)nodesListGetNode(pFunc->pParameterList, 0);
-  SExprNode* pPara1 = (SExprNode*)nodesListGetNode(pFunc->pParameterList, 1);
-
-  uint8_t para0Type = pPara0->resType.type;
-  uint8_t para1Type = pPara1->resType.type;
-  if (TSDB_DATA_TYPE_VARBINARY == para0Type ||
-      (!IS_STR_DATA_TYPE(para0Type) && !IS_NULL_TYPE(para0Type)) ||
-      (!IS_INTEGER_TYPE(para1Type) && !IS_NULL_TYPE(para1Type))) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  if (3 == numOfParams) {
-    SExprNode* pPara2 = (SExprNode*)nodesListGetNode(pFunc->pParameterList, 2);
-    uint8_t    para2Type = pPara2->resType.type;
-    if (!IS_INTEGER_TYPE(para2Type) && !IS_NULL_TYPE(para2Type)) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-
-    int64_t v = ((SValueNode*)pPara2)->datum.i;
-  }
-
   pFunc->node.resType = (SDataType){.bytes = pPara0->resType.bytes, .type = pPara0->resType.type};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateSubstrIdx(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (3 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   SExprNode* pPara0 = (SExprNode*)nodesListGetNode(pFunc->pParameterList, 0);
-  SExprNode* pPara1 = (SExprNode*)nodesListGetNode(pFunc->pParameterList, 1);
-  SExprNode* pPara2 = (SExprNode*)nodesListGetNode(pFunc->pParameterList, 2);
-
-  uint8_t para0Type = pPara0->resType.type;
-  uint8_t para1Type = pPara1->resType.type;
-  uint8_t para2Type = pPara2->resType.type;
-  if (TSDB_DATA_TYPE_VARBINARY == para0Type || (!IS_STR_DATA_TYPE(para0Type) && !IS_NULL_TYPE(para0Type)) ||
-      TSDB_DATA_TYPE_VARBINARY == para1Type || (!IS_STR_DATA_TYPE(para1Type) && !IS_NULL_TYPE(para1Type)) ||
-      (!IS_INTEGER_TYPE(para2Type) && !IS_NULL_TYPE(para2Type))) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
   pFunc->node.resType = (SDataType){.bytes = pPara0->resType.bytes, .type = pPara0->resType.type};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateChar(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  SNode *node;
-  FOREACH(node, pFunc->pParameterList) {
-    uint8_t paraType = getSDataTypeFromNode(node)->type;
-    if (paraType == TSDB_DATA_TYPE_VARBINARY ||
-        (!IS_STR_DATA_TYPE(paraType) && !IS_NUMERIC_TYPE(paraType) && !IS_NULL_TYPE(paraType))) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   int32_t numOfParams = LIST_LENGTH(pFunc->pParameterList);
   pFunc->node.resType = (SDataType){.bytes = 4 * numOfParams + 2, .type = TSDB_DATA_TYPE_VARCHAR};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateAscii(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (paraType == TSDB_DATA_TYPE_VARBINARY ||
-      (!IS_STR_DATA_TYPE(paraType) && !IS_NULL_TYPE(paraType))) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = tDataTypes[TSDB_DATA_TYPE_UTINYINT].bytes, .type = TSDB_DATA_TYPE_UTINYINT};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translatePosition(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (2 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t para0Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (para0Type == TSDB_DATA_TYPE_VARBINARY ||
-      (!IS_STR_DATA_TYPE(para0Type) && !IS_NULL_TYPE(para0Type))) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t para1Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 1))->type;
-  if (para1Type == TSDB_DATA_TYPE_VARBINARY ||
-      (!IS_STR_DATA_TYPE(para1Type) && !IS_NULL_TYPE(para1Type))) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = tDataTypes[TSDB_DATA_TYPE_BIGINT].bytes, .type = TSDB_DATA_TYPE_BIGINT};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateTrim(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (2 != LIST_LENGTH(pFunc->pParameterList) && 1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
+
 
   uint8_t para0Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (para0Type == TSDB_DATA_TYPE_VARBINARY ||
-      (!IS_STR_DATA_TYPE(para0Type) && !IS_NULL_TYPE(para0Type))) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
   int32_t resLen = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->bytes;
   uint8_t type = para0Type;
 
   if (2 == LIST_LENGTH(pFunc->pParameterList)) {
     uint8_t para1Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 1))->type;
-    if (para1Type == TSDB_DATA_TYPE_VARBINARY ||
-        (!IS_STR_DATA_TYPE(para1Type) && !IS_NULL_TYPE(para1Type))) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
     resLen = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 1))->bytes;
     type = para1Type;
   }
@@ -2414,17 +1796,7 @@ static int32_t translateTrim(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
 }
 
 static int32_t translateReplace(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (3 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  for (int32_t i = 0; i < 3; ++i) {
-    uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, i))->type;
-    if (paraType == TSDB_DATA_TYPE_VARBINARY ||
-        (!IS_STR_DATA_TYPE(paraType) && !IS_NULL_TYPE(paraType))) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-  }
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
 
   uint8_t orgType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
   uint8_t fromType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 1))->type;
@@ -2448,20 +1820,7 @@ static int32_t translateReplace(SFunctionNode* pFunc, char* pErrBuf, int32_t len
 }
 
 static int32_t translateRepeat(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (2 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t para0Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (para0Type == TSDB_DATA_TYPE_VARBINARY ||
-      (!IS_STR_DATA_TYPE(para0Type) && !IS_NULL_TYPE(para0Type))) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t para1Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 1))->type;
-  if (!IS_INTEGER_TYPE(para1Type) && !IS_NULL_TYPE(para1Type)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
 
   uint8_t type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
   int32_t orgLen = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->bytes;
@@ -2512,25 +1871,11 @@ static int32_t translateCast(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
 }
 
 static int32_t translateToIso8601(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   int32_t numOfParams = LIST_LENGTH(pFunc->pParameterList);
-  if (1 != numOfParams && 2 != numOfParams) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  // param0
-  uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (!IS_INTEGER_TYPE(paraType) && !IS_TIMESTAMP_TYPE(paraType)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
   // param1
   if (numOfParams == 2) {
-    SNode* pNode = (SNode*)nodesListGetNode(pFunc->pParameterList, 1);
-    if (QUERY_NODE_VALUE != nodeType(pNode)) {
-      return buildFuncErrMsg(pErrBuf, len, TSDB_CODE_FUNC_FUNTION_ERROR, "Not supported timzone format");
-    }
-    
-    SValueNode* pValue = (SValueNode*)pNode;
+    SValueNode* pValue = (SValueNode*)nodesListGetNode(pFunc->pParameterList, 1);
     if (!validateTimezoneFormat(pValue)) {
       return buildFuncErrMsg(pErrBuf, len, TSDB_CODE_FUNC_FUNTION_ERROR, "Invalid timzone format");
     }
@@ -2547,24 +1892,10 @@ static int32_t translateToIso8601(SFunctionNode* pFunc, char* pErrBuf, int32_t l
 }
 
 static int32_t translateToUnixtimestamp(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   int32_t numOfParams = LIST_LENGTH(pFunc->pParameterList);
   int16_t resType = TSDB_DATA_TYPE_BIGINT;
-
-  if (1 != numOfParams && 2 != numOfParams) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t para1Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (para1Type == TSDB_DATA_TYPE_VARBINARY || !IS_STR_DATA_TYPE(para1Type)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
   if (2 == numOfParams) {
-    uint8_t para2Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 1))->type;
-    if (!IS_INTEGER_TYPE(para2Type)) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-
     SValueNode* pValue = (SValueNode*)nodesListGetNode(pFunc->pParameterList, 1);
     if (pValue->datum.i == 1) {
       resType = TSDB_DATA_TYPE_TIMESTAMP;
@@ -2588,46 +1919,20 @@ static int32_t translateToUnixtimestamp(SFunctionNode* pFunc, char* pErrBuf, int
 }
 
 static int32_t translateToTimestamp(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (LIST_LENGTH(pFunc->pParameterList) != 2) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-  uint8_t para1Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  uint8_t para2Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 1))->type;
-  if (!IS_STR_DATA_TYPE(para1Type) || !IS_STR_DATA_TYPE(para2Type)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType =
       (SDataType){.bytes = tDataTypes[TSDB_DATA_TYPE_TIMESTAMP].bytes, .type = TSDB_DATA_TYPE_TIMESTAMP};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateToChar(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (LIST_LENGTH(pFunc->pParameterList) != 2) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-  uint8_t para1Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  uint8_t para2Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 1))->type;
-  // currently only support to_char(timestamp, str)
-  if (!IS_STR_DATA_TYPE(para2Type) || !IS_TIMESTAMP_TYPE(para1Type)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = 4096, .type = TSDB_DATA_TYPE_VARCHAR};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateTimeTruncate(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  int32_t numOfParams = LIST_LENGTH(pFunc->pParameterList);
-  if (2 != numOfParams && 3 != numOfParams) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t para1Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  uint8_t para2Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 1))->type;
-  if ((!IS_STR_DATA_TYPE(para1Type) && !IS_INTEGER_TYPE(para1Type) && !IS_TIMESTAMP_TYPE(para1Type)) ||
-      !IS_INTEGER_TYPE(para2Type)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   uint8_t dbPrec = pFunc->node.resType.precision;
   int32_t code = validateTimeUnitParam(dbPrec, (SValueNode*)nodesListGetNode(pFunc->pParameterList, 1));
   if (code == TSDB_CODE_FUNC_TIME_UNIT_TOO_SMALL) {
@@ -2637,17 +1942,6 @@ static int32_t translateTimeTruncate(SFunctionNode* pFunc, char* pErrBuf, int32_
     return buildFuncErrMsg(
         pErrBuf, len, code,
         "TIMETRUNCATE function time unit parameter should be one of the following: [1b, 1u, 1a, 1s, 1m, 1h, 1d, 1w]");
-  }
-
-  if (3 == numOfParams) {
-    uint8_t para3Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 2))->type;
-    if (!IS_INTEGER_TYPE(para3Type)) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-    SValueNode* pValue = (SValueNode*)nodesListGetNode(pFunc->pParameterList, 2);
-    if (pValue->datum.i != 0 && pValue->datum.i != 1) {
-      return invaildFuncParaValueErrMsg(pErrBuf, len, pFunc->functionName);
-    }
   }
 
   // add database precision as param
@@ -2669,23 +1963,12 @@ static int32_t translateTimeTruncate(SFunctionNode* pFunc, char* pErrBuf, int32_
 }
 
 static int32_t translateTimeDiff(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   int32_t numOfParams = LIST_LENGTH(pFunc->pParameterList);
-  if (2 != numOfParams && 3 != numOfParams) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
 
-  for (int32_t i = 0; i < 2; ++i) {
-    uint8_t paraType = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, i))->type;
-    if (!IS_STR_DATA_TYPE(paraType) && !IS_INTEGER_TYPE(paraType) && !IS_TIMESTAMP_TYPE(paraType) && !IS_NULL_TYPE(paraType)) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-  }
   uint8_t para2Type;
   if (3 == numOfParams) {
     para2Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 2))->type;
-    if (!IS_INTEGER_TYPE(para2Type) && !IS_NULL_TYPE(para2Type)) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
   }
 
   // add database precision as param
@@ -2713,15 +1996,7 @@ static int32_t translateTimeDiff(SFunctionNode* pFunc, char* pErrBuf, int32_t le
 }
 
 static int32_t translateWeekday(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t para1Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if ((!IS_STR_DATA_TYPE(para1Type) && !IS_INTEGER_TYPE(para1Type) &&
-       !IS_TIMESTAMP_TYPE(para1Type) && !IS_NULL_TYPE(para1Type))) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
 
   // add database precision as param
   uint8_t dbPrec = pFunc->node.resType.precision;
@@ -2737,28 +2012,7 @@ static int32_t translateWeekday(SFunctionNode* pFunc, char* pErrBuf, int32_t len
 }
 
 static int32_t translateWeek(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList) && 2 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t para1Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if ((!IS_STR_DATA_TYPE(para1Type) && !IS_INTEGER_TYPE(para1Type) &&
-       !IS_TIMESTAMP_TYPE(para1Type)) && !IS_NULL_TYPE(para1Type)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  if (2 == LIST_LENGTH(pFunc->pParameterList)) {
-    uint8_t para2Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 1))->type;
-    if (!IS_INTEGER_TYPE(para2Type) && !IS_NULL_TYPE(para2Type)) {
-      return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-    }
-    if (IS_INTEGER_TYPE(para2Type)) {
-      SValueNode* pValue = (SValueNode*)nodesListGetNode(pFunc->pParameterList, 1);
-      if (pValue->datum.i < 0 || pValue->datum.i > 7) {
-        return invaildFuncParaValueErrMsg(pErrBuf, len, pFunc->functionName);
-      }
-    }
-  }
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
 
   // add database precision as param
   uint8_t dbPrec = pFunc->node.resType.precision;
@@ -2774,15 +2028,7 @@ static int32_t translateWeek(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
 }
 
 static int32_t translateWeekofyear(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t para1Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if ((!IS_STR_DATA_TYPE(para1Type) && !IS_INTEGER_TYPE(para1Type) &&
-       !IS_TIMESTAMP_TYPE(para1Type)) && !IS_NULL_TYPE(para1Type)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
 
   // add database precision as param
   uint8_t dbPrec = pFunc->node.resType.precision;
@@ -2798,29 +2044,13 @@ static int32_t translateWeekofyear(SFunctionNode* pFunc, char* pErrBuf, int32_t 
 }
 
 static int32_t translateToJson(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  SExprNode* pPara = (SExprNode*)nodesListGetNode(pFunc->pParameterList, 0);
-  if (QUERY_NODE_VALUE != nodeType(pPara) || TSDB_DATA_TYPE_VARBINARY == pPara->resType.type || (!IS_VAR_DATA_TYPE(pPara->resType.type))) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = tDataTypes[TSDB_DATA_TYPE_JSON].bytes, .type = TSDB_DATA_TYPE_JSON};
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateInStrOutGeom(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t para1Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (!IS_STR_DATA_TYPE(para1Type) && !IS_NULL_TYPE(para1Type)) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = tDataTypes[TSDB_DATA_TYPE_GEOMETRY].bytes, .type = TSDB_DATA_TYPE_GEOMETRY};
 
   return TSDB_CODE_SUCCESS;
@@ -2842,34 +2072,14 @@ static int32_t translateInGeomOutStr(SFunctionNode* pFunc, char* pErrBuf, int32_
 }
 
 static int32_t translateIn2NumOutGeom(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (2 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t para1Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  uint8_t para2Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 1))->type;
-  if ((!IS_NUMERIC_TYPE(para1Type) && !IS_NULL_TYPE(para1Type)) ||
-      (!IS_NUMERIC_TYPE(para2Type) && !IS_NULL_TYPE(para2Type))) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = tDataTypes[TSDB_DATA_TYPE_GEOMETRY].bytes, .type = TSDB_DATA_TYPE_GEOMETRY};
 
   return TSDB_CODE_SUCCESS;
 }
 
 static int32_t translateIn2GeomOutBool(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (2 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t para1Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  uint8_t para2Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 1))->type;
-  if ((para1Type != TSDB_DATA_TYPE_GEOMETRY && !IS_NULL_TYPE(para1Type)) ||
-      (para2Type != TSDB_DATA_TYPE_GEOMETRY && !IS_NULL_TYPE(para2Type))) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = tDataTypes[TSDB_DATA_TYPE_BOOL].bytes, .type = TSDB_DATA_TYPE_BOOL};
 
   return TSDB_CODE_SUCCESS;
@@ -2896,12 +2106,8 @@ static bool getBlockDistFuncEnv(SFunctionNode* UNUSED_PARAM(pFunc), SFuncExecEnv
 }
 
 static int32_t translateGroupKey(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return TSDB_CODE_SUCCESS;
-  }
-
-  SNode* pPara = nodesListGetNode(pFunc->pParameterList, 0);
-  pFunc->node.resType = ((SExprNode*)pPara)->resType;
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
+  pFunc->node.resType = *getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0));
   return TSDB_CODE_SUCCESS;
 }
 
@@ -2946,15 +2152,7 @@ static int32_t translateTableCountPseudoColumn(SFunctionNode* pFunc, char* pErrB
 }
 
 static int32_t translateMd5(SFunctionNode* pFunc, char* pErrBuf, int32_t len) {
-  if (1 != LIST_LENGTH(pFunc->pParameterList)) {
-    return invaildFuncParaNumErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
-  uint8_t para1Type = getSDataTypeFromNode(nodesListGetNode(pFunc->pParameterList, 0))->type;
-  if (para1Type != TSDB_DATA_TYPE_VARCHAR) {
-    return invaildFuncParaTypeErrMsg(pErrBuf, len, pFunc->functionName);
-  }
-
+  FUNC_ERR_RET(validateParam(pFunc, pErrBuf, len));
   pFunc->node.resType = (SDataType){.bytes = MD5_OUTPUT_LEN + VARSTR_HEADER_SIZE, .type = TSDB_DATA_TYPE_VARCHAR};
   return TSDB_CODE_SUCCESS;
 }
@@ -2965,6 +2163,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "count",
     .type = FUNCTION_TYPE_COUNT,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_SPECIAL_DATA_REQUIRED | FUNC_MGT_IGNORE_NULL_FUNC | FUNC_MGT_TSMA_FUNC | FUNC_MGT_COUNT_LIKE_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_ALL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_BIGINT_TYPE}},
     .translateFunc = translateCount,
     .dataRequiredFunc = countDataRequired,
     .getEnvFunc   = getCountFuncEnv,
@@ -2984,6 +2195,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "sum",
     .type = FUNCTION_TYPE_SUM,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_SPECIAL_DATA_REQUIRED | FUNC_MGT_IGNORE_NULL_FUNC | FUNC_MGT_TSMA_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_BIGINT_TYPE | FUNC_PARAM_SUPPORT_DOUBLE_TYPE | FUNC_PARAM_SUPPORT_UBIGINT_TYPE}},
     .translateFunc = translateSum,
     .dataRequiredFunc = statisDataRequired,
     .getEnvFunc   = getSumFuncEnv,
@@ -3003,6 +2226,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "min",
     .type = FUNCTION_TYPE_MIN,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_SPECIAL_DATA_REQUIRED | FUNC_MGT_SELECT_FUNC | FUNC_MGT_IGNORE_NULL_FUNC | FUNC_MGT_TSMA_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_STRING_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_STRING_TYPE}},
     .translateFunc = translateMinMax,
     .dataRequiredFunc = statisDataRequired,
     .getEnvFunc   = getMinmaxFuncEnv,
@@ -3019,6 +2254,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "max",
     .type = FUNCTION_TYPE_MAX,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_SPECIAL_DATA_REQUIRED | FUNC_MGT_SELECT_FUNC | FUNC_MGT_IGNORE_NULL_FUNC | FUNC_MGT_TSMA_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_STRING_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_STRING_TYPE}},
     .translateFunc = translateMinMax,
     .dataRequiredFunc = statisDataRequired,
     .getEnvFunc   = getMinmaxFuncEnv,
@@ -3035,6 +2282,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "stddev",
     .type = FUNCTION_TYPE_STDDEV,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_TSMA_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateInNumOutDou,
     .getEnvFunc   = getStdFuncEnv,
     .initFunc     = stdFunctionSetup,
@@ -3053,6 +2313,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_std_partial",
     .type = FUNCTION_TYPE_STD_PARTIAL,
     .classification = FUNC_MGT_AGG_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateStdPartial,
     .getEnvFunc   = getStdFuncEnv,
     .initFunc     = stdFunctionSetup,
@@ -3067,6 +2339,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_stddev_merge",
     .type = FUNCTION_TYPE_STDDEV_MERGE,
     .classification = FUNC_MGT_AGG_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateStdMerge,
     .getEnvFunc   = getStdFuncEnv,
     .initFunc     = stdFunctionSetup,
@@ -3083,6 +2367,26 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "leastsquares",
     .type = FUNCTION_TYPE_LEASTSQUARES,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_FORBID_STREAM_FUNC | FUNC_MGT_FORBID_SYSTABLE_FUNC,
+    .parameters = {.minParamNum = 3,
+                   .maxParamNum = 3,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = true,
+                                           .startParam = 2,
+                                           .endParam = 3,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateLeastSQR,
     .getEnvFunc   = getLeastSQRFuncEnv,
     .initFunc     = leastSQRFunctionSetup,
@@ -3098,6 +2402,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "avg",
     .type = FUNCTION_TYPE_AVG,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_SPECIAL_DATA_REQUIRED | FUNC_MGT_IGNORE_NULL_FUNC | FUNC_MGT_TSMA_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateInNumOutDou,
     .dataRequiredFunc = statisDataRequired,
     .getEnvFunc   = getAvgFuncEnv,
@@ -3118,6 +2435,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_avg_partial",
     .type = FUNCTION_TYPE_AVG_PARTIAL,
     .classification = FUNC_MGT_AGG_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateAvgPartial,
     .dataRequiredFunc = statisDataRequired,
     .getEnvFunc   = getAvgFuncEnv,
@@ -3133,6 +2462,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_avg_merge",
     .type = FUNCTION_TYPE_AVG_MERGE,
     .classification = FUNC_MGT_AGG_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateAvgMerge,
     .getEnvFunc   = getAvgFuncEnv,
     .initFunc     = avgFunctionSetup,
@@ -3149,6 +2490,27 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "percentile",
     .type = FUNCTION_TYPE_PERCENTILE,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_REPEAT_SCAN_FUNC | FUNC_MGT_SPECIAL_DATA_REQUIRED | FUNC_MGT_FORBID_STREAM_FUNC,
+    .parameters = {.minParamNum = 2,
+                   .maxParamNum = 11,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = true,
+                                           .startParam = 2,
+                                           .endParam = 11,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = true,
+                                           .range = {.dMinVal = 0.0, .dMaxVal = 100.0}},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translatePercentile,
     .dataRequiredFunc = statisDataRequired,
     .getEnvFunc   = getPercentileFuncEnv,
@@ -3166,6 +2528,37 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "apercentile",
     .type = FUNCTION_TYPE_APERCENTILE,
     .classification = FUNC_MGT_AGG_FUNC,
+    .parameters = {.minParamNum = 2,
+                   .maxParamNum = 3,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = false,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_INTEGER_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = true,
+                                           .range = {.dMinVal = 0.0, .dMaxVal = 100.0}},
+                   .inputParaInfo[0][2] = {.isLastParam = true,
+                                           .startParam = 3,
+                                           .endParam = 3,
+                                           .validDataType = FUNC_PARAM_SUPPORT_STRING_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = true,
+                                           .hasRange = false,
+                                           .fixedValueSize = 2,
+                                           .fixedValue = {"default", "t-digest"}},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateApercentile,
     .getEnvFunc   = getApercentileFuncEnv,
     .initFunc     = apercentileFunctionSetup,
@@ -3184,6 +2577,37 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_apercentile_partial",
     .type = FUNCTION_TYPE_APERCENTILE_PARTIAL,
     .classification = FUNC_MGT_AGG_FUNC,
+    .parameters = {.minParamNum = 2,
+                   .maxParamNum = 3,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = false,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_INTEGER_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = true,
+                                           .range = {.dMinVal = 0.0, .dMaxVal = 100.0}},
+                   .inputParaInfo[0][2] = {.isLastParam = true,
+                                           .startParam = 3,
+                                           .endParam = 3,
+                                           .validDataType = FUNC_PARAM_SUPPORT_STRING_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = true,
+                                           .hasRange = false,
+                                           .fixedValueSize = 2,
+                                           .fixedValue = {"default", "t-digest"}},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateApercentilePartial,
     .getEnvFunc   = getApercentileFuncEnv,
     .initFunc     = apercentileFunctionSetup,
@@ -3198,6 +2622,37 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_apercentile_merge",
     .type = FUNCTION_TYPE_APERCENTILE_MERGE,
     .classification = FUNC_MGT_AGG_FUNC,
+    .parameters = {.minParamNum = 2,
+                   .maxParamNum = 3,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = false,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_INTEGER_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = true,
+                                           .range = {.dMinVal = 0.0, .dMaxVal = 100.0}},
+                   .inputParaInfo[0][2] = {.isLastParam = true,
+                                           .startParam = 3,
+                                           .endParam = 3,
+                                           .validDataType = FUNC_PARAM_SUPPORT_STRING_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = true,
+                                           .hasRange = false,
+                                           .fixedValueSize = 2,
+                                           .fixedValue = {"default", "t-digest"}},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateApercentileMerge,
     .getEnvFunc   = getApercentileFuncEnv,
     .initFunc     = apercentileFunctionSetup,
@@ -3213,6 +2668,27 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .type = FUNCTION_TYPE_TOP,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_SELECT_FUNC | FUNC_MGT_MULTI_ROWS_FUNC | FUNC_MGT_KEEP_ORDER_FUNC |
                       FUNC_MGT_FORBID_STREAM_FUNC | FUNC_MGT_FORBID_FILL_FUNC | FUNC_MGT_IGNORE_NULL_FUNC,
+    .parameters = {.minParamNum = 2,
+                   .maxParamNum = 2,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = true,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_INTEGER_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = true,
+                                           .range = {.dMinVal = 1.0, .dMaxVal = TOP_BOTTOM_QUERY_LIMIT}},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE}},
     .translateFunc = translateTopBot,
     .getEnvFunc   = getTopBotFuncEnv,
     .initFunc     = topBotFunctionSetup,
@@ -3229,6 +2705,27 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .type = FUNCTION_TYPE_BOTTOM,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_SELECT_FUNC | FUNC_MGT_MULTI_ROWS_FUNC | FUNC_MGT_KEEP_ORDER_FUNC |
                       FUNC_MGT_FORBID_STREAM_FUNC | FUNC_MGT_FORBID_FILL_FUNC | FUNC_MGT_IGNORE_NULL_FUNC,
+    .parameters = {.minParamNum = 2,
+                   .maxParamNum = 2,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = true,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_INTEGER_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = true,
+                                           .range = {.dMinVal = 1.0, .dMaxVal = TOP_BOTTOM_QUERY_LIMIT}},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE}},
     .translateFunc = translateTopBot,
     .getEnvFunc   = getTopBotFuncEnv,
     .initFunc     = topBotFunctionSetup,
@@ -3244,6 +2741,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "spread",
     .type = FUNCTION_TYPE_SPREAD,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_SPECIAL_DATA_REQUIRED | FUNC_MGT_TSMA_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_TIMESTAMP_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateSpread,
     .dataRequiredFunc = statisDataRequired,
     .getEnvFunc   = getSpreadFuncEnv,
@@ -3263,6 +2772,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_spread_partial",
     .type = FUNCTION_TYPE_SPREAD_PARTIAL,
     .classification = FUNC_MGT_AGG_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_TIMESTAMP_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateSpreadPartial,
     .dataRequiredFunc = statisDataRequired,
     .getEnvFunc   = getSpreadFuncEnv,
@@ -3277,6 +2798,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
   {
     .name = "_spread_merge",
     .type = FUNCTION_TYPE_SPREAD_MERGE,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .classification = FUNC_MGT_AGG_FUNC,
     .translateFunc = translateSpreadMerge,
     .dataRequiredFunc = statisDataRequired,
@@ -3296,6 +2829,28 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .type = FUNCTION_TYPE_ELAPSED,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_TIMELINE_FUNC | FUNC_MGT_INTERVAL_INTERPO_FUNC | FUNC_MGT_FORBID_STREAM_FUNC |
                       FUNC_MGT_FORBID_SYSTABLE_FUNC | FUNC_MGT_SPECIAL_DATA_REQUIRED,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 2,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_TIMESTAMP_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_COLUMN_NODE,
+                                           .isPK = true,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = true,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_INTEGER_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = true,
+                                           .hasRange = false,
+                                           .fixedValueSize = 8,
+                                           .fixedValue = {"1b", "1u", "1a", "1s", "1m", "1h", "1d", "1w"}},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .dataRequiredFunc = statisDataRequired,
     .translateFunc = translateElapsed,
     .getEnvFunc   = getElapsedFuncEnv,
@@ -3311,6 +2866,7 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_elapsed_partial",
     .type = FUNCTION_TYPE_ELAPSED,
     .classification = FUNC_MGT_AGG_FUNC,
+    .parameters = {},
     .dataRequiredFunc = statisDataRequired,
     .translateFunc = translateElapsedPartial,
     .getEnvFunc   = getElapsedFuncEnv,
@@ -3326,6 +2882,7 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_elapsed_merge",
     .type = FUNCTION_TYPE_ELAPSED,
     .classification = FUNC_MGT_AGG_FUNC,
+    .parameters = {},
     .dataRequiredFunc = statisDataRequired,
     .translateFunc = translateElapsedMerge,
     .getEnvFunc   = getElapsedFuncEnv,
@@ -3342,6 +2899,28 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .type = FUNCTION_TYPE_INTERP,
     .classification = FUNC_MGT_TIMELINE_FUNC | FUNC_MGT_INTERVAL_INTERPO_FUNC | FUNC_MGT_IMPLICIT_TS_FUNC |
                       FUNC_MGT_FORBID_STREAM_FUNC | FUNC_MGT_FORBID_SYSTABLE_FUNC | FUNC_MGT_KEEP_ORDER_FUNC | FUNC_MGT_PRIMARY_KEY_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 2,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_BOOL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_NOT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = true,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_INTEGER_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = true,
+                                           .hasRange = false,
+                                           .fixedValueSize = 2,
+                                           .fixedNumValue = {0, 1}},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE}},
     .translateFunc = translateInterp,
     .getEnvFunc    = getSelectivityFuncEnv,
     .initFunc      = functionSetup,
@@ -3354,6 +2933,37 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .type = FUNCTION_TYPE_DERIVATIVE,
     .classification = FUNC_MGT_INDEFINITE_ROWS_FUNC | FUNC_MGT_SELECT_FUNC | FUNC_MGT_TIMELINE_FUNC | FUNC_MGT_IMPLICIT_TS_FUNC |
                       FUNC_MGT_KEEP_ORDER_FUNC | FUNC_MGT_CUMULATIVE_FUNC | FUNC_MGT_FORBID_STREAM_FUNC | FUNC_MGT_FORBID_SYSTABLE_FUNC | FUNC_MGT_PRIMARY_KEY_FUNC,
+    .parameters = {.minParamNum = 3,
+                   .maxParamNum = 3,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = false,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = true,
+                                           .range = {.dMinVal = 1.0, .dMaxVal = DBL_MAX}},
+                   .inputParaInfo[0][2] = {.isLastParam = true,
+                                           .startParam = 3,
+                                           .endParam = 3,
+                                           .validDataType = FUNC_PARAM_SUPPORT_INTEGER_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = true,
+                                           .hasRange = false,
+                                           .fixedValueSize = 2,
+                                           .fixedNumValue = {0, 1}},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateDerivative,
     .getEnvFunc   = getDerivativeFuncEnv,
     .initFunc     = derivativeFuncSetup,
@@ -3367,6 +2977,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .type = FUNCTION_TYPE_IRATE,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_TIMELINE_FUNC | FUNC_MGT_IMPLICIT_TS_FUNC | FUNC_MGT_FORBID_STREAM_FUNC |
                       FUNC_MGT_FORBID_SYSTABLE_FUNC | FUNC_MGT_PRIMARY_KEY_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateIrate,
     .getEnvFunc   = getIrateFuncEnv,
     .initFunc     = irateFuncSetup,
@@ -3381,6 +3003,45 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .type = FUNCTION_TYPE_IRATE_PARTIAL,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_TIMELINE_FUNC | FUNC_MGT_IMPLICIT_TS_FUNC | FUNC_MGT_FORBID_STREAM_FUNC |
                       FUNC_MGT_FORBID_SYSTABLE_FUNC | FUNC_MGT_PRIMARY_KEY_FUNC,
+    .parameters = {.minParamNum = 3,
+                   .maxParamNum = 4,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = false,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_TINYINT_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][2] = {.isLastParam = false,
+                                           .startParam = 3,
+                                           .endParam = 3,
+                                           .validDataType = FUNC_PARAM_SUPPORT_TIMESTAMP_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_COLUMN_NODE,
+                                           .isPK = false,
+                                           .isTs = true,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][3] = {.isLastParam = true,
+                                           .startParam = 4,
+                                           .endParam = 4,
+                                           .validDataType = FUNC_PARAM_SUPPORT_INTEGER_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_COLUMN_NODE,
+                                           .isPK = true,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateIratePartial,
     .getEnvFunc   = getIrateFuncEnv,
     .initFunc     = irateFuncSetup,
@@ -3392,6 +3053,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_irate_merge",
     .type = FUNCTION_TYPE_IRATE_MERGE,
     .classification = FUNC_MGT_AGG_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateIrateMerge,
     .getEnvFunc   = getIrateFuncEnv,
     .initFunc     = irateFuncSetup,
@@ -3404,6 +3077,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .type = FUNCTION_TYPE_LAST_ROW,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_MULTI_RES_FUNC | FUNC_MGT_SELECT_FUNC | FUNC_MGT_IMPLICIT_TS_FUNC |
                       FUNC_MGT_KEEP_ORDER_FUNC | FUNC_MGT_FORBID_SYSTABLE_FUNC | FUNC_MGT_PRIMARY_KEY_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = -1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = -1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NOT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_NOT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_NOT_NULL_TYPE}},
     .translateFunc = translateFirstLast,
     .dynDataRequiredFunc = lastDynDataReq,
     .getEnvFunc   = getFirstLastFuncEnv,
@@ -3420,6 +3105,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .type = FUNCTION_TYPE_CACHE_LAST_ROW,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_MULTI_RES_FUNC | FUNC_MGT_SELECT_FUNC | FUNC_MGT_IMPLICIT_TS_FUNC |
                       FUNC_MGT_FORBID_STREAM_FUNC | FUNC_MGT_FORBID_SYSTABLE_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = -1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = -1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NOT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_NOT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_NOT_NULL_TYPE}},
     .translateFunc = translateFirstLast,
     .getEnvFunc   = getFirstLastFuncEnv,
     .initFunc     = functionSetup,
@@ -3430,6 +3127,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_cache_last",
     .type = FUNCTION_TYPE_CACHE_LAST,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_MULTI_RES_FUNC | FUNC_MGT_SELECT_FUNC | FUNC_MGT_FORBID_STREAM_FUNC | FUNC_MGT_FORBID_SYSTABLE_FUNC | FUNC_MGT_IGNORE_NULL_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = -1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = -1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NOT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_NOT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_NOT_NULL_TYPE}},
     .translateFunc = translateFirstLast,
     .getEnvFunc   = getFirstLastFuncEnv,
     .initFunc     = functionSetup,
@@ -3441,6 +3150,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .type = FUNCTION_TYPE_LAST_PARTIAL,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_SELECT_FUNC | FUNC_MGT_MULTI_RES_FUNC | FUNC_MGT_IMPLICIT_TS_FUNC |
                       FUNC_MGT_FORBID_SYSTABLE_FUNC | FUNC_MGT_PRIMARY_KEY_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = -1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = -1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NOT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_NOT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateFirstLastPartial,
     .dynDataRequiredFunc = lastDynDataReq,
     .getEnvFunc   = getFirstLastFuncEnv,
@@ -3453,6 +3174,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .type = FUNCTION_TYPE_LAST_MERGE,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_SELECT_FUNC | FUNC_MGT_MULTI_RES_FUNC | FUNC_MGT_IMPLICIT_TS_FUNC |
                       FUNC_MGT_FORBID_SYSTABLE_FUNC | FUNC_MGT_PRIMARY_KEY_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = -1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_NOT_NULL_TYPE}},
     .translateFunc = translateFirstLastMerge,
     .getEnvFunc   = getFirstLastFuncEnv,
     .initFunc     = functionSetup,
@@ -3464,6 +3198,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .type = FUNCTION_TYPE_FIRST,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_SELECT_FUNC | FUNC_MGT_MULTI_RES_FUNC | FUNC_MGT_IMPLICIT_TS_FUNC |
                       FUNC_MGT_KEEP_ORDER_FUNC | FUNC_MGT_FORBID_SYSTABLE_FUNC | FUNC_MGT_IGNORE_NULL_FUNC | FUNC_MGT_PRIMARY_KEY_FUNC | FUNC_MGT_TSMA_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = -1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = -1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NOT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_NOT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_NOT_NULL_TYPE}},
     .translateFunc = translateFirstLast,
     .dynDataRequiredFunc = firstDynDataReq,
     .getEnvFunc   = getFirstLastFuncEnv,
@@ -3481,6 +3227,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .type = FUNCTION_TYPE_FIRST_PARTIAL,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_SELECT_FUNC | FUNC_MGT_MULTI_RES_FUNC | FUNC_MGT_IMPLICIT_TS_FUNC |
                       FUNC_MGT_FORBID_SYSTABLE_FUNC | FUNC_MGT_IGNORE_NULL_FUNC | FUNC_MGT_PRIMARY_KEY_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = -1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = -1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NOT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_NOT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateFirstLastPartial,
     .dynDataRequiredFunc = firstDynDataReq,
     .getEnvFunc   = getFirstLastFuncEnv,
@@ -3494,6 +3252,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .type = FUNCTION_TYPE_FIRST_MERGE,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_SELECT_FUNC | FUNC_MGT_MULTI_RES_FUNC | FUNC_MGT_IMPLICIT_TS_FUNC |
                       FUNC_MGT_FORBID_SYSTABLE_FUNC | FUNC_MGT_IGNORE_NULL_FUNC | FUNC_MGT_PRIMARY_KEY_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = -1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_NOT_NULL_TYPE}},
     .translateFunc = translateFirstLastMerge,
     .getEnvFunc   = getFirstLastFuncEnv,
     .initFunc     = functionSetup,
@@ -3508,6 +3279,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .type = FUNCTION_TYPE_LAST,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_SELECT_FUNC | FUNC_MGT_MULTI_RES_FUNC | FUNC_MGT_IMPLICIT_TS_FUNC |
                       FUNC_MGT_KEEP_ORDER_FUNC | FUNC_MGT_FORBID_SYSTABLE_FUNC | FUNC_MGT_IGNORE_NULL_FUNC | FUNC_MGT_PRIMARY_KEY_FUNC | FUNC_MGT_TSMA_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = -1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = -1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NOT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_NOT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_NOT_NULL_TYPE}},
     .translateFunc = translateFirstLast,
     .dynDataRequiredFunc = lastDynDataReq,
     .getEnvFunc   = getFirstLastFuncEnv,
@@ -3525,6 +3308,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .type = FUNCTION_TYPE_LAST_PARTIAL,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_SELECT_FUNC | FUNC_MGT_MULTI_RES_FUNC | FUNC_MGT_IMPLICIT_TS_FUNC |
                       FUNC_MGT_FORBID_SYSTABLE_FUNC | FUNC_MGT_IGNORE_NULL_FUNC | FUNC_MGT_PRIMARY_KEY_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = -1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = -1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NOT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_NOT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateFirstLastPartial,
     .dynDataRequiredFunc = lastDynDataReq,
     .getEnvFunc   = getFirstLastFuncEnv,
@@ -3538,6 +3333,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .type = FUNCTION_TYPE_LAST_MERGE,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_SELECT_FUNC | FUNC_MGT_MULTI_RES_FUNC | FUNC_MGT_IMPLICIT_TS_FUNC |
                       FUNC_MGT_FORBID_SYSTABLE_FUNC | FUNC_MGT_IGNORE_NULL_FUNC | FUNC_MGT_PRIMARY_KEY_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = -1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = -1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_NOT_NULL_TYPE}},
     .translateFunc = translateFirstLastMerge,
     .getEnvFunc   = getFirstLastFuncEnv,
     .initFunc     = functionSetup,
@@ -3552,6 +3360,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .type = FUNCTION_TYPE_TWA,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_TIMELINE_FUNC | FUNC_MGT_INTERVAL_INTERPO_FUNC | FUNC_MGT_FORBID_STREAM_FUNC |
                       FUNC_MGT_IMPLICIT_TS_FUNC | FUNC_MGT_FORBID_SYSTABLE_FUNC | FUNC_MGT_PRIMARY_KEY_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateInNumOutDou,
     .dataRequiredFunc = statisDataRequired,
     .getEnvFunc    = getTwaFuncEnv,
@@ -3564,6 +3385,48 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "histogram",
     .type = FUNCTION_TYPE_HISTOGRAM,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_MULTI_ROWS_FUNC | FUNC_MGT_FORBID_FILL_FUNC | FUNC_MGT_FORBID_STREAM_FUNC,
+    .parameters = {.minParamNum = 4,
+                   .maxParamNum = 4,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = false,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = true,
+                                           .hasRange = false,
+                                           .fixedValue = {"user_input", "linear_bin", "log_bin"}},
+                   .inputParaInfo[0][2] = {.isLastParam = false,
+                                           .startParam = 3,
+                                           .endParam = 3,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][3] = {.isLastParam = true,
+                                           .startParam = 4,
+                                           .endParam = 4,
+                                           .validDataType = FUNC_PARAM_SUPPORT_INTEGER_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = true,
+                                           .hasRange = false,
+                                           .fixedNumValue = {0, 1}},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateHistogram,
     .getEnvFunc   = getHistogramFuncEnv,
     .initFunc     = histogramFunctionSetup,
@@ -3581,6 +3444,48 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_histogram_partial",
     .type = FUNCTION_TYPE_HISTOGRAM_PARTIAL,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_MULTI_ROWS_FUNC | FUNC_MGT_FORBID_FILL_FUNC,
+    .parameters = {.minParamNum = 4,
+                   .maxParamNum = 4,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = false,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = true,
+                                           .hasRange = false,
+                                           .fixedValue = {"user_input", "linear_bin", "log_bin"}},
+                   .inputParaInfo[0][2] = {.isLastParam = false,
+                                           .startParam = 3,
+                                           .endParam = 3,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][3] = {.isLastParam = true,
+                                           .startParam = 4,
+                                           .endParam = 4,
+                                           .validDataType = FUNC_PARAM_SUPPORT_INTEGER_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = true,
+                                           .hasRange = false,
+                                           .fixedNumValue = {0, 1}},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateHistogramPartial,
     .getEnvFunc   = getHistogramFuncEnv,
     .initFunc     = histogramFunctionSetup,
@@ -3595,6 +3500,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_histogram_merge",
     .type = FUNCTION_TYPE_HISTOGRAM_MERGE,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_MULTI_ROWS_FUNC | FUNC_MGT_FORBID_FILL_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateHistogramMerge,
     .getEnvFunc   = getHistogramFuncEnv,
     .initFunc     = functionSetup,
@@ -3609,6 +3527,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "hyperloglog",
     .type = FUNCTION_TYPE_HYPERLOGLOG,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_COUNT_LIKE_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_ALL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_BIGINT_TYPE}},
     .translateFunc = translateHLL,
     .getEnvFunc   = getHLLFuncEnv,
     .initFunc     = functionSetup,
@@ -3625,6 +3556,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
   {
     .name = "_hyperloglog_partial",
     .type = FUNCTION_TYPE_HYPERLOGLOG_PARTIAL,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_ALL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .classification = FUNC_MGT_AGG_FUNC,
     .translateFunc = translateHLLPartial,
     .getEnvFunc   = getHLLFuncEnv,
@@ -3639,6 +3583,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
   {
     .name = "_hyperloglog_merge",
     .type = FUNCTION_TYPE_HYPERLOGLOG_MERGE,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_BIGINT_TYPE}},
     .classification = FUNC_MGT_AGG_FUNC,
     .translateFunc = translateHLLMerge,
     .getEnvFunc   = getHLLFuncEnv,
@@ -3656,6 +3613,30 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .type = FUNCTION_TYPE_DIFF,
     .classification = FUNC_MGT_INDEFINITE_ROWS_FUNC | FUNC_MGT_SELECT_FUNC | FUNC_MGT_TIMELINE_FUNC | FUNC_MGT_IMPLICIT_TS_FUNC | FUNC_MGT_PROCESS_BY_ROW |
                       FUNC_MGT_KEEP_ORDER_FUNC | FUNC_MGT_FORBID_STREAM_FUNC | FUNC_MGT_CUMULATIVE_FUNC | FUNC_MGT_FORBID_SYSTABLE_FUNC | FUNC_MGT_PRIMARY_KEY_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 2,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_TIMESTAMP_TYPE | FUNC_PARAM_SUPPORT_BOOL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = true,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_INTEGER_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = true,
+                                           .hasRange = false,
+                                           .fixedValueSize = 4,
+                                           .fixedNumValue = {0, 1, 2, 3}},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_BIGINT_TYPE | FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateDiff,
     .getEnvFunc   = getDiffFuncEnv,
     .initFunc     = diffFunctionSetup,
@@ -3670,6 +3651,39 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .type = FUNCTION_TYPE_STATE_COUNT,
     .classification = FUNC_MGT_INDEFINITE_ROWS_FUNC | FUNC_MGT_SELECT_FUNC | FUNC_MGT_TIMELINE_FUNC | FUNC_MGT_IMPLICIT_TS_FUNC |
                       FUNC_MGT_FORBID_STREAM_FUNC | FUNC_MGT_FORBID_SYSTABLE_FUNC,
+    .parameters = {.minParamNum = 3,
+                   .maxParamNum = 3,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = false,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_STRING_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = true,
+                                           .hasRange = false,
+                                           .fixedValueSize = 6,
+                                           .fixedValue = {"LT", "GT", "LE", "GE", "NE", "EQ"}},
+                   .inputParaInfo[0][2] = {.isLastParam = true,
+                                           .startParam = 3,
+                                           .endParam = 3,
+                                           .validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE | FUNC_PARAM_SUPPORT_BIGINT_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_BIGINT_TYPE}},
     .translateFunc = translateStateCount,
     .getEnvFunc   = getStateFuncEnv,
     .initFunc     = functionSetup,
@@ -3682,6 +3696,48 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .type = FUNCTION_TYPE_STATE_DURATION,
     .classification = FUNC_MGT_INDEFINITE_ROWS_FUNC | FUNC_MGT_SELECT_FUNC | FUNC_MGT_TIMELINE_FUNC | FUNC_MGT_IMPLICIT_TS_FUNC |
                       FUNC_MGT_FORBID_STREAM_FUNC | FUNC_MGT_FORBID_SYSTABLE_FUNC,
+    .parameters = {.minParamNum = 4,
+                   .maxParamNum = 4,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = false,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_STRING_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = true,
+                                           .hasRange = false,
+                                           .fixedValueSize = 6,
+                                           .fixedValue = {"LT", "GT", "LE", "GE", "NE", "EQ"}},
+                   .inputParaInfo[0][2] = {.isLastParam = false,
+                                           .startParam = 3,
+                                           .endParam = 3,
+                                           .validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE | FUNC_PARAM_SUPPORT_BIGINT_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][3] = {.isLastParam = true,
+                                           .startParam = 4,
+                                           .endParam = 4,
+                                           .validDataType = FUNC_PARAM_SUPPORT_BIGINT_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_BIGINT_TYPE}},
     .translateFunc = translateStateDuration,
     .getEnvFunc   = getStateFuncEnv,
     .initFunc     = functionSetup,
@@ -3694,6 +3750,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .type = FUNCTION_TYPE_CSUM,
     .classification = FUNC_MGT_INDEFINITE_ROWS_FUNC | FUNC_MGT_SELECT_FUNC | FUNC_MGT_TIMELINE_FUNC | FUNC_MGT_IMPLICIT_TS_FUNC |
                       FUNC_MGT_FORBID_STREAM_FUNC | FUNC_MGT_CUMULATIVE_FUNC | FUNC_MGT_KEEP_ORDER_FUNC | FUNC_MGT_FORBID_SYSTABLE_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_BIGINT_TYPE | FUNC_PARAM_SUPPORT_DOUBLE_TYPE | FUNC_PARAM_SUPPORT_UBIGINT_TYPE}},
     .translateFunc = translateCsum,
     .getEnvFunc   = getCsumFuncEnv,
     .initFunc     = functionSetup,
@@ -3707,6 +3776,29 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .type = FUNCTION_TYPE_MAVG,
     .classification = FUNC_MGT_INDEFINITE_ROWS_FUNC | FUNC_MGT_SELECT_FUNC | FUNC_MGT_TIMELINE_FUNC | FUNC_MGT_IMPLICIT_TS_FUNC |
                       FUNC_MGT_FORBID_STREAM_FUNC | FUNC_MGT_FORBID_SYSTABLE_FUNC,
+    .parameters = {.minParamNum = 2,
+                   .maxParamNum = 2,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = true,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_INTEGER_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = true,
+                                           .range = {.dMinVal = 1.0, .dMaxVal = 100.0}},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateMavg,
     .getEnvFunc   = getMavgFuncEnv,
     .initFunc     = mavgFunctionSetup,
@@ -3719,6 +3811,29 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .type = FUNCTION_TYPE_SAMPLE,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_SELECT_FUNC | FUNC_MGT_MULTI_ROWS_FUNC | FUNC_MGT_KEEP_ORDER_FUNC | FUNC_MGT_FORBID_STREAM_FUNC |
                       FUNC_MGT_FORBID_FILL_FUNC,
+    .parameters = {.minParamNum = 2,
+                   .maxParamNum = 2,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_ALL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = true,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_INTEGER_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = true,
+                                           .range = {.dMinVal = 1.0, .dMaxVal = 100.0}},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_ALL_TYPE}},
     .translateFunc = translateSample,
     .getEnvFunc   = getSampleFuncEnv,
     .initFunc     = sampleFunctionSetup,
@@ -3730,6 +3845,39 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "tail",
     .type = FUNCTION_TYPE_TAIL,
     .classification = FUNC_MGT_SELECT_FUNC | FUNC_MGT_INDEFINITE_ROWS_FUNC | FUNC_MGT_FORBID_STREAM_FUNC | FUNC_MGT_IMPLICIT_TS_FUNC,
+    .parameters = {.minParamNum = 2,
+                   .maxParamNum = 3,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_ALL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = false,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_INTEGER_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = true,
+                                           .range = {.dMinVal = 1.0, .dMaxVal = 100.0}},
+                   .inputParaInfo[0][2] = {.isLastParam = true,
+                                           .startParam = 3,
+                                           .endParam = 3,
+                                           .validDataType = FUNC_PARAM_SUPPORT_INTEGER_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = true,
+                                           .range = {.dMinVal = 0.0, .dMaxVal = 100.0}},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_ALL_TYPE}},
     .translateFunc = translateTail,
     .getEnvFunc   = getTailFuncEnv,
     .initFunc     = tailFunctionSetup,
@@ -3741,6 +3889,20 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "unique",
     .type = FUNCTION_TYPE_UNIQUE,
     .classification = FUNC_MGT_SELECT_FUNC | FUNC_MGT_INDEFINITE_ROWS_FUNC | FUNC_MGT_FORBID_STREAM_FUNC | FUNC_MGT_IMPLICIT_TS_FUNC | FUNC_MGT_PRIMARY_KEY_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_ALL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false,
+                                           .hasColumn = true},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_ALL_TYPE}},
     .translateFunc = translateUnique,
     .getEnvFunc   = getUniqueFuncEnv,
     .initFunc     = uniqueFunctionSetup,
@@ -3752,6 +3914,20 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "mode",
     .type = FUNCTION_TYPE_MODE,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_SELECT_FUNC | FUNC_MGT_FORBID_STREAM_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_ALL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false,
+                                           .hasColumn = true},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_ALL_TYPE}},
     .translateFunc = translateMode,
     .getEnvFunc   = getModeFuncEnv,
     .initFunc     = modeFunctionSetup,
@@ -3764,6 +3940,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "abs",
     .type = FUNCTION_TYPE_ABS,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE}},
     .translateFunc = translateInOutNum,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -3774,6 +3963,28 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "log",
     .type = FUNCTION_TYPE_LOG,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 2,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = false,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateLogarithm,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -3784,6 +3995,28 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "pow",
     .type = FUNCTION_TYPE_POW,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 2,
+                   .maxParamNum = 2,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = false,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateIn2NumOutDou,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -3794,6 +4027,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "sqrt",
     .type = FUNCTION_TYPE_SQRT,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateInNumOutDou,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -3804,6 +4050,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "ceil",
     .type = FUNCTION_TYPE_CEIL,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE}},
     .translateFunc = translateInOutNum,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -3814,6 +4073,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "floor",
     .type = FUNCTION_TYPE_FLOOR,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE}},
     .translateFunc = translateInOutNum,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -3824,6 +4096,28 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "round",
     .type = FUNCTION_TYPE_ROUND,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 2,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = true,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateRound,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -3834,6 +4128,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "sin",
     .type = FUNCTION_TYPE_SIN,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateInNumOutDou,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -3844,6 +4151,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "cos",
     .type = FUNCTION_TYPE_COS,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateInNumOutDou,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -3854,6 +4174,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "tan",
     .type = FUNCTION_TYPE_TAN,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateInNumOutDou,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -3864,6 +4197,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "asin",
     .type = FUNCTION_TYPE_ASIN,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateInNumOutDou,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -3874,6 +4220,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "acos",
     .type = FUNCTION_TYPE_ACOS,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateInNumOutDou,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -3884,6 +4243,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "atan",
     .type = FUNCTION_TYPE_ATAN,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateInNumOutDou,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -3894,6 +4266,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "length",
     .type = FUNCTION_TYPE_LENGTH,
     .classification = FUNC_MGT_SCALAR_FUNC | FUNC_MGT_STRING_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_STRING_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_BIGINT_TYPE}},
     .translateFunc = translateLength,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -3904,6 +4289,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "char_length",
     .type = FUNCTION_TYPE_CHAR_LENGTH,
     .classification = FUNC_MGT_SCALAR_FUNC | FUNC_MGT_STRING_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_BIGINT_TYPE}},
     .translateFunc = translateCharLength,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -3914,6 +4312,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "concat",
     .type = FUNCTION_TYPE_CONCAT,
     .classification = FUNC_MGT_SCALAR_FUNC | FUNC_MGT_STRING_FUNC,
+    .parameters = {.minParamNum = 2,
+                   .maxParamNum = 8,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 8,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE}},
     .translateFunc = translateConcat,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -3924,6 +4335,28 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "concat_ws",
     .type = FUNCTION_TYPE_CONCAT_WS,
     .classification = FUNC_MGT_SCALAR_FUNC | FUNC_MGT_STRING_FUNC,
+    .parameters = {.minParamNum = 3,
+                   .maxParamNum = 9,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = true,
+                                           .startParam = 2,
+                                           .endParam = 9,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE}},
     .translateFunc = translateConcatWs,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -3934,6 +4367,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "lower",
     .type = FUNCTION_TYPE_LOWER,
     .classification = FUNC_MGT_SCALAR_FUNC | FUNC_MGT_STRING_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE}},
     .translateFunc = translateInOutStr,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -3944,6 +4390,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "upper",
     .type = FUNCTION_TYPE_UPPER,
     .classification = FUNC_MGT_SCALAR_FUNC | FUNC_MGT_STRING_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE}},
     .translateFunc = translateInOutStr,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -3954,6 +4413,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "ltrim",
     .type = FUNCTION_TYPE_LTRIM,
     .classification = FUNC_MGT_SCALAR_FUNC | FUNC_MGT_STRING_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE}},
     .translateFunc = translateLtrim,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -3964,6 +4436,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "rtrim",
     .type = FUNCTION_TYPE_RTRIM,
     .classification = FUNC_MGT_SCALAR_FUNC | FUNC_MGT_STRING_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE}},
     .translateFunc = translateRtrim,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -3974,6 +4459,28 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "substr",
     .type = FUNCTION_TYPE_SUBSTR,
     .classification = FUNC_MGT_SCALAR_FUNC | FUNC_MGT_STRING_FUNC,
+    .parameters = {.minParamNum = 2,
+                   .maxParamNum = 3,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = true,
+                                           .startParam = 2,
+                                           .endParam = 3,
+                                           .validDataType = FUNC_PARAM_SUPPORT_INTEGER_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE}},
     .translateFunc = translateSubstr,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -3984,6 +4491,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "cast",
     .type = FUNCTION_TYPE_CAST,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_ALL_TYPE,// TODO(smj) : without varbinary and json
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_ALL_TYPE}},
     .translateFunc = translateCast,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -3994,6 +4514,28 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "to_iso8601",
     .type = FUNCTION_TYPE_TO_ISO8601,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 2,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_INTEGER_TYPE | FUNC_PARAM_SUPPORT_TIMESTAMP_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = true,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateToIso8601,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4004,6 +4546,30 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "to_unixtimestamp",
     .type = FUNCTION_TYPE_TO_UNIXTIMESTAMP,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 2,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = true,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_INTEGER_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = true,
+                                           .hasRange = false,
+                                           .fixedValueSize = 2,
+                                           .fixedValue = {0, 1}},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_BIGINT_TYPE | FUNC_PARAM_SUPPORT_TIMESTAMP_TYPE}},
     .translateFunc = translateToUnixtimestamp,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4014,6 +4580,39 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "timetruncate",
     .type = FUNCTION_TYPE_TIMETRUNCATE,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 2,
+                   .maxParamNum = 3,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE | FUNC_PARAM_SUPPORT_TIMESTAMP_TYPE | FUNC_PARAM_SUPPORT_INTEGER_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = false,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_INTEGER_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][2] = {.isLastParam = true,
+                                           .startParam = 3,
+                                           .endParam = 3,
+                                           .validDataType = FUNC_PARAM_SUPPORT_INTEGER_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = true,
+                                           .hasRange = false,
+                                           .fixedValueSize = 2,
+                                           .fixedNumValue = {0, 1}},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_TIMESTAMP_TYPE}},
     .translateFunc = translateTimeTruncate,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4024,6 +4623,28 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "timediff",
     .type = FUNCTION_TYPE_TIMEDIFF,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 2,
+                   .maxParamNum = 3,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE | FUNC_PARAM_SUPPORT_TIMESTAMP_TYPE | FUNC_PARAM_SUPPORT_INTEGER_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = true,
+                                           .startParam = 3,
+                                           .endParam = 3,
+                                           .validDataType = FUNC_PARAM_SUPPORT_INTEGER_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_TIMESTAMP_TYPE}},
     .translateFunc = translateTimeDiff,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4034,6 +4655,9 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "now",
     .type = FUNCTION_TYPE_NOW,
     .classification = FUNC_MGT_SCALAR_FUNC | FUNC_MGT_DATETIME_FUNC | FUNC_MGT_KEEP_ORDER_FUNC,
+    .parameters = {.minParamNum = 0,
+                   .maxParamNum = 0,
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_TIMESTAMP_TYPE}},
     .translateFunc = translateNowToday,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4044,6 +4668,9 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "today",
     .type = FUNCTION_TYPE_TODAY,
     .classification = FUNC_MGT_SCALAR_FUNC | FUNC_MGT_DATETIME_FUNC | FUNC_MGT_KEEP_ORDER_FUNC,
+    .parameters = {.minParamNum = 0,
+                   .maxParamNum = 0,
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_TIMESTAMP_TYPE}},
     .translateFunc = translateNowToday,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4054,6 +4681,9 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "timezone",
     .type = FUNCTION_TYPE_TIMEZONE,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 0,
+                   .maxParamNum = 0,
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateTimezone,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4064,6 +4694,9 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "tbname",
     .type = FUNCTION_TYPE_TBNAME,
     .classification = FUNC_MGT_PSEUDO_COLUMN_FUNC | FUNC_MGT_SCAN_PC_FUNC | FUNC_MGT_KEEP_ORDER_FUNC,
+    .parameters = {.minParamNum = 0,
+                   .maxParamNum = 0,
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateTbnameColumn,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4074,6 +4707,9 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_qstart",
     .type = FUNCTION_TYPE_QSTART,
     .classification = FUNC_MGT_PSEUDO_COLUMN_FUNC | FUNC_MGT_CLIENT_PC_FUNC,
+    .parameters = {.minParamNum = 0,
+                   .maxParamNum = 0,
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_TIMESTAMP_TYPE}},
     .translateFunc = translateTimePseudoColumn,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4084,6 +4720,9 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_qend",
     .type = FUNCTION_TYPE_QEND,
     .classification = FUNC_MGT_PSEUDO_COLUMN_FUNC | FUNC_MGT_CLIENT_PC_FUNC,
+    .parameters = {.minParamNum = 0,
+                   .maxParamNum = 0,
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_TIMESTAMP_TYPE}},
     .translateFunc = translateTimePseudoColumn,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4094,6 +4733,9 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_qduration",
     .type = FUNCTION_TYPE_QDURATION,
     .classification = FUNC_MGT_PSEUDO_COLUMN_FUNC | FUNC_MGT_CLIENT_PC_FUNC,
+    .parameters = {.minParamNum = 0,
+                   .maxParamNum = 0,
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_BIGINT_TYPE}},
     .translateFunc = translateWduration,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4104,6 +4746,9 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_wstart",
     .type = FUNCTION_TYPE_WSTART,
     .classification = FUNC_MGT_PSEUDO_COLUMN_FUNC | FUNC_MGT_WINDOW_PC_FUNC | FUNC_MGT_KEEP_ORDER_FUNC | FUNC_MGT_SKIP_SCAN_CHECK_FUNC,
+    .parameters = {.minParamNum = 0,
+                   .maxParamNum = 0,
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_TIMESTAMP_TYPE}},
     .translateFunc = translateTimePseudoColumn,
     .getEnvFunc   = getTimePseudoFuncEnv,
     .initFunc     = NULL,
@@ -4114,6 +4759,9 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_wend",
     .type = FUNCTION_TYPE_WEND,
     .classification = FUNC_MGT_PSEUDO_COLUMN_FUNC | FUNC_MGT_WINDOW_PC_FUNC | FUNC_MGT_KEEP_ORDER_FUNC | FUNC_MGT_SKIP_SCAN_CHECK_FUNC,
+    .parameters = {.minParamNum = 0,
+                   .maxParamNum = 0,
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_TIMESTAMP_TYPE}},
     .translateFunc = translateTimePseudoColumn,
     .getEnvFunc   = getTimePseudoFuncEnv,
     .initFunc     = NULL,
@@ -4124,6 +4772,9 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_wduration",
     .type = FUNCTION_TYPE_WDURATION,
     .classification = FUNC_MGT_PSEUDO_COLUMN_FUNC | FUNC_MGT_WINDOW_PC_FUNC | FUNC_MGT_KEEP_ORDER_FUNC | FUNC_MGT_SKIP_SCAN_CHECK_FUNC,
+    .parameters = {.minParamNum = 0,
+                   .maxParamNum = 0,
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_BIGINT_TYPE}},
     .translateFunc = translateWduration,
     .getEnvFunc   = getTimePseudoFuncEnv,
     .initFunc     = NULL,
@@ -4134,6 +4785,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "to_json",
     .type = FUNCTION_TYPE_TO_JSON,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_VALUE_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_JSON_TYPE}},
     .translateFunc = translateToJson,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4144,6 +4808,9 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_select_value",
     .type = FUNCTION_TYPE_SELECT_VALUE,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_SELECT_FUNC | FUNC_MGT_KEEP_ORDER_FUNC,
+    .parameters = {.minParamNum = 0,
+                   .maxParamNum = 0,
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_ALL_TYPE}},
     .translateFunc = translateSelectValue,
     .getEnvFunc   = getSelectivityFuncEnv,  // todo remove this function later.
     .initFunc     = functionSetup,
@@ -4156,6 +4823,9 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_block_dist",
     .type = FUNCTION_TYPE_BLOCK_DIST,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_FORBID_STREAM_FUNC,
+    .parameters = {.minParamNum = 0,
+                   .maxParamNum = 0,
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateBlockDistFunc,
     .getEnvFunc   = getBlockDistFuncEnv,
     .initFunc     = blockDistSetup,
@@ -4166,12 +4836,27 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_block_dist_info",
     .type = FUNCTION_TYPE_BLOCK_DIST_INFO,
     .classification = FUNC_MGT_PSEUDO_COLUMN_FUNC | FUNC_MGT_SCAN_PC_FUNC,
+    .parameters = {.minParamNum = 0,
+                   .maxParamNum = 0,
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateBlockDistInfoFunc,
   },
   {
     .name = "_group_key",
     .type = FUNCTION_TYPE_GROUP_KEY,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_SELECT_FUNC | FUNC_MGT_KEEP_ORDER_FUNC | FUNC_MGT_SKIP_SCAN_CHECK_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_ALL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_ALL_TYPE}},
     .translateFunc = translateGroupKey,
     .getEnvFunc   = getGroupKeyFuncEnv,
     .initFunc     = functionSetup,
@@ -4185,42 +4870,63 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "database",
     .type = FUNCTION_TYPE_DATABASE,
     .classification = FUNC_MGT_SYSTEM_INFO_FUNC | FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 0,
+                   .maxParamNum = 0,
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateDatabaseFunc,
   },
   {
     .name = "client_version",
     .type = FUNCTION_TYPE_CLIENT_VERSION,
     .classification = FUNC_MGT_SYSTEM_INFO_FUNC | FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 0,
+                   .maxParamNum = 0,
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateClientVersionFunc,
   },
   {
     .name = "server_version",
     .type = FUNCTION_TYPE_SERVER_VERSION,
     .classification = FUNC_MGT_SYSTEM_INFO_FUNC | FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 0,
+                   .maxParamNum = 0,
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateServerVersionFunc,
   },
   {
     .name = "server_status",
     .type = FUNCTION_TYPE_SERVER_STATUS,
     .classification = FUNC_MGT_SYSTEM_INFO_FUNC | FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 0,
+                   .maxParamNum = 0,
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateServerStatusFunc,
   },
   {
     .name = "current_user",
     .type = FUNCTION_TYPE_CURRENT_USER,
     .classification = FUNC_MGT_SYSTEM_INFO_FUNC | FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 0,
+                   .maxParamNum = 0,
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateCurrentUserFunc,
   },
   {
     .name = "user",
     .type = FUNCTION_TYPE_USER,
     .classification = FUNC_MGT_SYSTEM_INFO_FUNC | FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 0,
+                   .maxParamNum = 0,
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateUserFunc,
   },
   {
     .name = "_irowts",
     .type = FUNCTION_TYPE_IROWTS,
     .classification = FUNC_MGT_PSEUDO_COLUMN_FUNC | FUNC_MGT_INTERP_PC_FUNC | FUNC_MGT_KEEP_ORDER_FUNC,
+    .parameters = {.minParamNum = 0,
+                   .maxParamNum = 0,
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_TIMESTAMP_TYPE}},
     .translateFunc = translateTimePseudoColumn,
     .getEnvFunc   = getTimePseudoFuncEnv,
     .initFunc     = NULL,
@@ -4231,6 +4937,9 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_isfilled",
     .type = FUNCTION_TYPE_ISFILLED,
     .classification = FUNC_MGT_PSEUDO_COLUMN_FUNC | FUNC_MGT_INTERP_PC_FUNC,
+    .parameters = {.minParamNum = 0,
+                   .maxParamNum = 0,
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_BOOL_TYPE}},
     .translateFunc = translateIsFilledPseudoColumn,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4241,6 +4950,7 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_tags",
     .type = FUNCTION_TYPE_TAGS,
     .classification = FUNC_MGT_PSEUDO_COLUMN_FUNC | FUNC_MGT_MULTI_RES_FUNC,
+    .parameters = {},
     .translateFunc = translateTagsPseudoColumn,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4251,6 +4961,9 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_table_count",
     .type = FUNCTION_TYPE_TABLE_COUNT,
     .classification = FUNC_MGT_PSEUDO_COLUMN_FUNC | FUNC_MGT_SCAN_PC_FUNC,
+    .parameters = {.minParamNum = 0,
+                   .maxParamNum = 0,
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_BIGINT_TYPE}},
     .translateFunc = translateTableCountPseudoColumn,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4261,6 +4974,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "st_geomfromtext",
     .type = FUNCTION_TYPE_GEOM_FROM_TEXT,
     .classification = FUNC_MGT_SCALAR_FUNC | FUNC_MGT_GEOMETRY_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_STRING_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_GEOMETRY_TYPE}},
     .translateFunc = translateInStrOutGeom,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4271,6 +4996,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "st_astext",
     .type = FUNCTION_TYPE_AS_TEXT,
     .classification = FUNC_MGT_SCALAR_FUNC | FUNC_MGT_GEOMETRY_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_GEOMETRY_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_STRING_TYPE}},
     .translateFunc = translateInGeomOutStr,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4281,6 +5018,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "st_makepoint",
     .type = FUNCTION_TYPE_MAKE_POINT,
     .classification = FUNC_MGT_SCALAR_FUNC | FUNC_MGT_GEOMETRY_FUNC,
+    .parameters = {.minParamNum = 2,
+                   .maxParamNum = 2,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_GEOMETRY_TYPE}},
     .translateFunc = translateIn2NumOutGeom,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4291,6 +5040,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "st_intersects",
     .type = FUNCTION_TYPE_INTERSECTS,
     .classification = FUNC_MGT_SCALAR_FUNC | FUNC_MGT_GEOMETRY_FUNC,
+    .parameters = {.minParamNum = 2,
+                   .maxParamNum = 2,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_GEOMETRY_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_BOOL_TYPE}},
     .translateFunc = translateIn2GeomOutBool,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4301,6 +5062,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "st_equals",
     .type = FUNCTION_TYPE_EQUALS,
     .classification = FUNC_MGT_SCALAR_FUNC | FUNC_MGT_GEOMETRY_FUNC,
+    .parameters = {.minParamNum = 2,
+                   .maxParamNum = 2,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_GEOMETRY_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_BOOL_TYPE}},
     .translateFunc = translateIn2GeomOutBool,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4311,6 +5084,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "st_touches",
     .type = FUNCTION_TYPE_TOUCHES,
     .classification = FUNC_MGT_SCALAR_FUNC | FUNC_MGT_GEOMETRY_FUNC,
+    .parameters = {.minParamNum = 2,
+                   .maxParamNum = 2,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_GEOMETRY_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_BOOL_TYPE}},
     .translateFunc = translateIn2GeomOutBool,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4321,6 +5106,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "st_covers",
     .type = FUNCTION_TYPE_COVERS,
     .classification = FUNC_MGT_SCALAR_FUNC | FUNC_MGT_GEOMETRY_FUNC,
+    .parameters = {.minParamNum = 2,
+                   .maxParamNum = 2,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_GEOMETRY_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_BOOL_TYPE}},
     .translateFunc = translateIn2GeomOutBool,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4331,6 +5128,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "st_contains",
     .type = FUNCTION_TYPE_CONTAINS,
     .classification = FUNC_MGT_SCALAR_FUNC | FUNC_MGT_GEOMETRY_FUNC,
+    .parameters = {.minParamNum = 2,
+                   .maxParamNum = 2,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_GEOMETRY_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_BOOL_TYPE}},
     .translateFunc = translateIn2GeomOutBool,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4341,6 +5150,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "st_containsproperly",
     .type = FUNCTION_TYPE_CONTAINS_PROPERLY,
     .classification = FUNC_MGT_SCALAR_FUNC | FUNC_MGT_GEOMETRY_FUNC,
+    .parameters = {.minParamNum = 2,
+                   .maxParamNum = 2,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_GEOMETRY_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_BOOL_TYPE}},
     .translateFunc = translateIn2GeomOutBool,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4351,6 +5172,9 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_tbuid",
     .type = FUNCTION_TYPE_TBUID,
     .classification = FUNC_MGT_PSEUDO_COLUMN_FUNC | FUNC_MGT_SCAN_PC_FUNC | FUNC_MGT_KEEP_ORDER_FUNC,
+    .parameters = {.minParamNum = 0,
+                   .maxParamNum = 0,
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_BIGINT_TYPE}},
     .translateFunc = translateTbUidColumn,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4361,6 +5185,9 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_vgid",
     .type = FUNCTION_TYPE_VGID,
     .classification = FUNC_MGT_PSEUDO_COLUMN_FUNC | FUNC_MGT_SCAN_PC_FUNC | FUNC_MGT_KEEP_ORDER_FUNC,
+    .parameters = {.minParamNum = 0,
+                   .maxParamNum = 0,
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_INT_TYPE}},
     .translateFunc = translateVgIdColumn,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4371,6 +5198,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "to_timestamp",
     .type = FUNCTION_TYPE_TO_TIMESTAMP,
     .classification = FUNC_MGT_SCALAR_FUNC | FUNC_MGT_DATETIME_FUNC,
+    .parameters = {.minParamNum = 2,
+                   .maxParamNum = 2,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_STRING_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_TIMESTAMP_TYPE}},
     .translateFunc = translateToTimestamp,
     .getEnvFunc = NULL,
     .initFunc = NULL,
@@ -4381,6 +5220,27 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "to_char",
     .type = FUNCTION_TYPE_TO_CHAR,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 2,
+                   .maxParamNum = 2,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_TIMESTAMP_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = true,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_STRING_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateToChar,
     .getEnvFunc = NULL,
     .initFunc = NULL,
@@ -4391,6 +5251,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_avg_middle",
     .type = FUNCTION_TYPE_AVG_PARTIAL,
     .classification = FUNC_MGT_AGG_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateAvgMiddle,
     .dataRequiredFunc = statisDataRequired,
     .getEnvFunc   = getAvgFuncEnv,
@@ -4406,6 +5279,9 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_vgver",
     .type = FUNCTION_TYPE_VGVER,
     .classification = FUNC_MGT_PSEUDO_COLUMN_FUNC | FUNC_MGT_SCAN_PC_FUNC | FUNC_MGT_KEEP_ORDER_FUNC,
+    .parameters = {.minParamNum = 0,
+                   .maxParamNum = 0,
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_BIGINT_TYPE}},
     .translateFunc = translateVgVerColumn,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4416,6 +5292,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_std_state",
     .type = FUNCTION_TYPE_STD_STATE,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_TSMA_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateStdState,
     .getEnvFunc   = getStdFuncEnv,
     .initFunc     = stdFunctionSetup,
@@ -4428,6 +5317,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_std_state_merge",
     .type = FUNCTION_TYPE_STD_STATE_MERGE,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_TSMA_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateStdStateMerge,
     .getEnvFunc = getStdFuncEnv,
     .initFunc = stdFunctionSetup,
@@ -4438,6 +5340,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_avg_state",
     .type = FUNCTION_TYPE_AVG_STATE,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_TSMA_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateAvgState,
     .getEnvFunc = getAvgFuncEnv,
     .initFunc = avgFunctionSetup,
@@ -4450,6 +5365,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_avg_state_merge",
     .type = FUNCTION_TYPE_AVG_STATE_MERGE,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_TSMA_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateAvgStateMerge,
     .getEnvFunc = getAvgFuncEnv,
     .initFunc = avgFunctionSetup,
@@ -4460,6 +5388,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_spread_state",
     .type = FUNCTION_TYPE_SPREAD_STATE,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_SPECIAL_DATA_REQUIRED | FUNC_MGT_TSMA_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_TIMESTAMP_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateSpreadState,
     .getEnvFunc = getSpreadFuncEnv,
     .initFunc = spreadFunctionSetup,
@@ -4472,6 +5413,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_spread_state_merge",
     .type = FUNCTION_TYPE_SPREAD_STATE_MERGE,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_TSMA_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateSpreadStateMerge,
     .getEnvFunc = getSpreadFuncEnv,
     .initFunc = spreadFunctionSetup,
@@ -4483,6 +5437,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .type = FUNCTION_TYPE_FIRST_STATE,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_SELECT_FUNC | FUNC_MGT_MULTI_RES_FUNC | FUNC_MGT_IMPLICIT_TS_FUNC |
                       FUNC_MGT_KEEP_ORDER_FUNC | FUNC_MGT_FORBID_SYSTABLE_FUNC | FUNC_MGT_TSMA_FUNC | FUNC_MGT_PRIMARY_KEY_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = -1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = -1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NOT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateFirstLastState,
     .getEnvFunc = getFirstLastFuncEnv,
     .initFunc = functionSetup,
@@ -4496,6 +5463,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .type = FUNCTION_TYPE_FIRST_STATE_MERGE,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_SELECT_FUNC | FUNC_MGT_MULTI_RES_FUNC | FUNC_MGT_IMPLICIT_TS_FUNC |
                       FUNC_MGT_KEEP_ORDER_FUNC | FUNC_MGT_FORBID_SYSTABLE_FUNC | FUNC_MGT_TSMA_FUNC | FUNC_MGT_PRIMARY_KEY_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateFirstLastStateMerge,
     .getEnvFunc = getFirstLastFuncEnv,
     .initFunc = functionSetup,
@@ -4507,6 +5487,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .type = FUNCTION_TYPE_LAST_STATE,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_SELECT_FUNC | FUNC_MGT_MULTI_RES_FUNC | FUNC_MGT_IMPLICIT_TS_FUNC |
                       FUNC_MGT_KEEP_ORDER_FUNC | FUNC_MGT_FORBID_SYSTABLE_FUNC | FUNC_MGT_TSMA_FUNC | FUNC_MGT_PRIMARY_KEY_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = -1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = -1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NOT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateFirstLastState,
     .getEnvFunc = getFirstLastFuncEnv,
     .initFunc = functionSetup,
@@ -4520,15 +5513,42 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .type = FUNCTION_TYPE_LAST_STATE_MERGE,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_SELECT_FUNC | FUNC_MGT_MULTI_RES_FUNC | FUNC_MGT_IMPLICIT_TS_FUNC |
                       FUNC_MGT_KEEP_ORDER_FUNC | FUNC_MGT_FORBID_SYSTABLE_FUNC | FUNC_MGT_TSMA_FUNC | FUNC_MGT_PRIMARY_KEY_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateFirstLastStateMerge,
     .getEnvFunc = getFirstLastFuncEnv,
     .initFunc = functionSetup,
     .processFunc = lastFunctionMerge,
     .finalizeFunc = firstLastPartialFinalize,
   },
-  {   .name = "_hyperloglog_state",
+  {
+    .name = "_hyperloglog_state",
     .type = FUNCTION_TYPE_HYPERLOGLOG_STATE,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_COUNT_LIKE_FUNC | FUNC_MGT_TSMA_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_ALL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateHLLState,
     .getEnvFunc = getHLLFuncEnv,
     .initFunc = functionSetup,
@@ -4541,6 +5561,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_hyperloglog_state_merge",
     .type = FUNCTION_TYPE_HYPERLOGLOG_STATE_MERGE,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_COUNT_LIKE_FUNC | FUNC_MGT_TSMA_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateHLLStateMerge,
     .getEnvFunc = getHLLFuncEnv,
     .initFunc = functionSetup,
@@ -4551,6 +5584,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "md5",
     .type = FUNCTION_TYPE_MD5,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateMd5,
     .getEnvFunc = NULL,
     .initFunc = NULL,
@@ -4561,6 +5607,9 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_group_const_value",
     .type = FUNCTION_TYPE_GROUP_CONST_VALUE,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_SELECT_FUNC | FUNC_MGT_KEEP_ORDER_FUNC,
+    .parameters = {.minParamNum = 0,
+                   .maxParamNum = 0,
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_ALL_TYPE}},
     .translateFunc = translateSelectValue,
     .getEnvFunc   = getSelectivityFuncEnv,
     .initFunc     = functionSetup,
@@ -4571,6 +5620,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "stddev_pop",
     .type = FUNCTION_TYPE_STDDEV,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_TSMA_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateInNumOutDou,
     .getEnvFunc   = getStdFuncEnv,
     .initFunc     = stdFunctionSetup,
@@ -4589,6 +5651,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "var_pop",
     .type = FUNCTION_TYPE_STDVAR,
     .classification = FUNC_MGT_AGG_FUNC | FUNC_MGT_TSMA_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateInNumOutDou,
     .getEnvFunc   = getStdFuncEnv,
     .initFunc     = stdFunctionSetup,
@@ -4607,6 +5682,18 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "_stdvar_merge",
     .type = FUNCTION_TYPE_STDVAR_MERGE,
     .classification = FUNC_MGT_AGG_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateStdMerge,
     .getEnvFunc   = getStdFuncEnv,
     .initFunc     = stdFunctionSetup,
@@ -4623,6 +5710,9 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "pi",
     .type = FUNCTION_TYPE_PI,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 0,
+                   .maxParamNum = 0,
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translatePi,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4633,6 +5723,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "exp",
     .type = FUNCTION_TYPE_EXP,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateInNumOutDou,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4643,6 +5746,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "ln",
     .type = FUNCTION_TYPE_LN,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateInNumOutDou,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4653,6 +5769,28 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "mod",
     .type = FUNCTION_TYPE_MOD,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 2,
+                   .maxParamNum = 2,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = false,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateIn2NumOutDou,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4663,6 +5801,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "sign",
     .type = FUNCTION_TYPE_SIGN,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE}},
     .translateFunc = translateInOutNum,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4673,6 +5824,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "degrees",
     .type = FUNCTION_TYPE_DEGREES,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateInNumOutDou,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4683,6 +5847,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "radians",
     .type = FUNCTION_TYPE_RADIANS,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateInNumOutDou,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4693,6 +5870,28 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "truncate",
     .type = FUNCTION_TYPE_TRUNCATE,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 2,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = true,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateTrunc,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4703,6 +5902,28 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "trunc",
     .type = FUNCTION_TYPE_TRUNCATE,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 2,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = true,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_NUMERIC_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateTrunc,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4713,6 +5934,37 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "substring",
     .type = FUNCTION_TYPE_SUBSTR,
     .classification = FUNC_MGT_SCALAR_FUNC | FUNC_MGT_STRING_FUNC,
+    .parameters = {.minParamNum = 2,
+                   .maxParamNum = 3,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = false,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_INTEGER_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][2] = {.isLastParam = true,
+                                           .startParam = 3,
+                                           .endParam = 3,
+                                           .validDataType = FUNC_PARAM_SUPPORT_INTEGER_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE}},
     .translateFunc = translateSubstr,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4723,6 +5975,37 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "substring_index",
     .type = FUNCTION_TYPE_SUBSTR_IDX,
     .classification = FUNC_MGT_SCALAR_FUNC | FUNC_MGT_STRING_FUNC,
+    .parameters = {.minParamNum = 3,
+                   .maxParamNum = 3,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = false,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][2] = {.isLastParam = true,
+                                           .startParam = 3,
+                                           .endParam = 3,
+                                           .validDataType = FUNC_PARAM_SUPPORT_INTEGER_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE}},
     .translateFunc = translateSubstrIdx,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4733,6 +6016,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "char",
     .type = FUNCTION_TYPE_CHAR,
     .classification = FUNC_MGT_SCALAR_FUNC | FUNC_MGT_STRING_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = -1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = -1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE | FUNC_PARAM_SUPPORT_INTEGER_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE}},
     .translateFunc = translateChar,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4743,6 +6039,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "ascii",
     .type = FUNCTION_TYPE_ASCII,
     .classification = FUNC_MGT_SCALAR_FUNC | FUNC_MGT_STRING_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_BIGINT_TYPE}},
     .translateFunc = translateAscii,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4753,6 +6062,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "position",
     .type = FUNCTION_TYPE_POSITION,
     .classification = FUNC_MGT_SCALAR_FUNC | FUNC_MGT_STRING_FUNC,
+    .parameters = {.minParamNum = 2,
+                   .maxParamNum = 2,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_BIGINT_TYPE}},
     .translateFunc = translatePosition,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4763,6 +6085,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "trim",
     .type = FUNCTION_TYPE_TRIM,
     .classification = FUNC_MGT_SCALAR_FUNC | FUNC_MGT_STRING_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 2,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE}},
     .translateFunc = translateTrim,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4773,6 +6108,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "replace",
     .type = FUNCTION_TYPE_REPLACE,
     .classification = FUNC_MGT_SCALAR_FUNC | FUNC_MGT_STRING_FUNC,
+    .parameters = {.minParamNum = 3,
+                   .maxParamNum = 3,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 3,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE}},
     .translateFunc = translateReplace,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4783,6 +6131,28 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "repeat",
     .type = FUNCTION_TYPE_REPEAT,
     .classification = FUNC_MGT_SCALAR_FUNC | FUNC_MGT_STRING_FUNC,
+    .parameters = {.minParamNum = 2,
+                   .maxParamNum = 2,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = true,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_INTEGER_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_VARCHAR_TYPE | FUNC_PARAM_SUPPORT_NCHAR_TYPE}},
     .translateFunc = translateRepeat,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4793,6 +6163,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "weekday",
     .type = FUNCTION_TYPE_WEEKDAY,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_UNIX_TS_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_BIGINT_TYPE}},
     .translateFunc = translateWeekday,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4803,6 +6186,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "dayofweek",
     .type = FUNCTION_TYPE_DAYOFWEEK,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_UNIX_TS_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_BIGINT_TYPE}},
     .translateFunc = translateWeekday,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4813,6 +6209,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "week",
     .type = FUNCTION_TYPE_WEEK,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 2,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_UNIX_TS_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_BIGINT_TYPE}},
     .translateFunc = translateWeek,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4823,6 +6232,30 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "weekofyear",
     .type = FUNCTION_TYPE_WEEKOFYEAR,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 1,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = false,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_UNIX_TS_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .inputParaInfo[0][1] = {.isLastParam = true,
+                                           .startParam = 2,
+                                           .endParam = 2,
+                                           .validDataType = FUNC_PARAM_SUPPORT_INTEGER_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = true,
+                                           .hasRange = false,
+                                           .fixedValueSize = 8,
+                                           .fixedNumValue = {0, 1, 2, 3, 4, 5, 6, 7}},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_BIGINT_TYPE}},
     .translateFunc = translateWeekofyear,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
@@ -4833,6 +6266,19 @@ const SBuiltinFuncDefinition funcMgtBuiltins[] = {
     .name = "rand",
     .type = FUNCTION_TYPE_RAND,
     .classification = FUNC_MGT_SCALAR_FUNC,
+    .parameters = {.minParamNum = 0,
+                   .maxParamNum = 1,
+                   .paramInfoPattern = 1,
+                   .inputParaInfo[0][0] = {.isLastParam = true,
+                                           .startParam = 1,
+                                           .endParam = 1,
+                                           .validDataType = FUNC_PARAM_SUPPORT_INTEGER_TYPE | FUNC_PARAM_SUPPORT_NULL_TYPE,
+                                           .validNodeType = FUNC_PARAM_SUPPORT_EXPR_NODE,
+                                           .isPK = false,
+                                           .isTs = false,
+                                           .isFixedValue = false,
+                                           .hasRange = false},
+                   .outputParaInfo = {.validDataType = FUNC_PARAM_SUPPORT_DOUBLE_TYPE}},
     .translateFunc = translateRand,
     .getEnvFunc   = NULL,
     .initFunc     = NULL,
